@@ -1,0 +1,34 @@
+# 环境与密钥
+.env
+backend/.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+env/
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+staticfiles/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# 系统
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Trae
+.trae/
+.claude/
