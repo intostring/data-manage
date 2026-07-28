@@ -73,30 +73,61 @@ def insert_rows(meta: TableMeta, rows: list) -> int:
     return len(data)
 
 
-def fetch_rows(meta: TableMeta, limit: int = 20, offset: int = 0, search: str = '') -> tuple:
-    """查询动态表数据，返回 (rows, total)"""
+def fetch_rows(meta: TableMeta, limit: int = 20, offset: int = 0,
+               search: str = '', order_by: str = '', order_dir: str = 'asc',
+               filters: dict = None) -> tuple:
+    """查询动态表数据，返回 (rows, total)
+
+    - search: 全局模糊搜索（在所有文本列上 LIKE）
+    - order_by: 排序字段名（必须是已注册列名或 'id'）
+    - order_dir: 'asc' 或 'desc'
+    - filters: 按字段筛选 {col_name: value}，文本列 LIKE，数值列精确匹配
+    """
     cols = meta.get_columns()
     col_names = [quote_ident(c['name']) for c in cols]
     select = f'SELECT `id`, {", ".join(col_names)} FROM `{meta.table_name}`'
 
-    where = ''
+    # 校验排序字段，防 SQL 注入
+    valid_names = {'id', *(c['name'] for c in cols)}
+    order_clause = 'ORDER BY `id` DESC'
+    if order_by and order_by in valid_names and order_dir in ('asc', 'desc'):
+        order_clause = f'ORDER BY {quote_ident(order_by)} {order_dir.upper()}, `id` DESC'
+
+    where_parts = []
     params = []
+
+    # 全局搜索
     if search:
-        # 在所有文本列上做 LIKE 搜索
         like_clauses = []
         for c in cols:
             if c['type'] in ('str', 'text'):
                 like_clauses.append(f'{quote_ident(c["name"])} LIKE %s')
                 params.append(f'%{search}%')
         if like_clauses:
-            where = ' WHERE ' + ' OR '.join(like_clauses)
+            where_parts.append('(' + ' OR '.join(like_clauses) + ')')
+
+    # 按字段筛选
+    if filters:
+        col_map = {c['name']: c for c in cols}
+        for fname, fval in filters.items():
+            if fname not in col_map or fval in (None, ''):
+                continue
+            c = col_map[fname]
+            if c['type'] in ('str', 'text'):
+                where_parts.append(f'{quote_ident(fname)} LIKE %s')
+                params.append(f'%{fval}%')
+            else:
+                where_parts.append(f'{quote_ident(fname)} = %s')
+                params.append(fval)
+
+    where = (' WHERE ' + ' AND '.join(where_parts)) if where_parts else ''
 
     with connection.cursor() as cur:
         cur.execute(f'SELECT COUNT(*) FROM `{meta.table_name}`{where}', params)
         total = cur.fetchone()[0]
 
         cur.execute(
-            f'{select}{where} ORDER BY `id` DESC LIMIT %s OFFSET %s',
+            f'{select}{where} {order_clause} LIMIT %s OFFSET %s',
             params + [limit, offset],
         )
         result = cur.fetchall()

@@ -1,7 +1,7 @@
 <template>
   <div class="min-h-screen bg-canvas flex items-center justify-center px-4">
     <div class="w-full max-w-sm">
-      <div class="mb-8">
+      <div class="mb-8 text-center">
         <h1 class="text-2xl font-bold text-ink tracking-tight">数据管理平台</h1>
         <p class="text-sm text-ink-muted mt-1">登录以管理你的数据表</p>
       </div>

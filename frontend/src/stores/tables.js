@@ -12,6 +12,8 @@ export const useTablesStore = defineStore('tables', {
       ...state.existingTables.map((t) => ({ ...t, kind: 'existing' })),
       ...state.dynamicTables.map((t) => ({ ...t, kind: 'dynamic' })),
     ],
+    momTables: (state) => state.existingTables.filter((t) => t.group !== 'fof'),
+    fofTables: (state) => state.existingTables.filter((t) => t.group === 'fof'),
   },
   actions: {
     async fetchExisting() {

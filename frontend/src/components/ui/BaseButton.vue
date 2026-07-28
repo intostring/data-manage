@@ -21,9 +21,9 @@ defineEmits(['click'])
 
 const variants = {
   primary: 'bg-accent text-white hover:bg-accent-hover border border-accent',
-  secondary: 'bg-panel text-ink hover:bg-canvas border border-line',
-  danger: 'bg-danger text-white hover:bg-red-900 border border-danger',
-  ghost: 'bg-transparent text-ink-muted hover:bg-canvas border border-transparent',
+  secondary: 'bg-panelLight text-ink hover:bg-canvasDark border border-line',
+  danger: 'bg-danger text-white hover:bg-red-600 border border-danger',
+  ghost: 'bg-transparent text-ink-muted hover:bg-canvasDark border border-transparent',
 }
 
 const sizes = {

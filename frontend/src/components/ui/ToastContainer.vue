@@ -17,19 +17,20 @@
 </template>
 
 <script setup>
-import { CheckCircle2, AlertCircle, Info } from 'lucide-vue-next'
+import { CheckCircle2, AlertCircle, Info, AlertTriangle } from 'lucide-vue-next'
 import { useToast } from './toast'
 
 const { toasts } = useToast()
 
 function iconFor(type) {
-  return { success: CheckCircle2, error: AlertCircle, info: Info }[type] || Info
+  return { success: CheckCircle2, error: AlertCircle, info: Info, warning: AlertTriangle }[type] || Info
 }
 function borderClass(type) {
   return {
     success: 'border-line text-success',
     error: 'border-line text-danger',
     info: 'border-line text-ink-muted',
+    warning: 'border-line text-warning',
   }[type]
 }
 </script>

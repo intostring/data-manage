@@ -23,6 +23,7 @@ export function useToast() {
     success: (msg, d) => push(msg, 'success', d),
     error: (msg, d) => push(msg, 'error', d ?? 4000),
     info: (msg, d) => push(msg, 'info', d),
+    warning: (msg, d) => push(msg, 'warning', d ?? 4000),
     remove,
   }
 }

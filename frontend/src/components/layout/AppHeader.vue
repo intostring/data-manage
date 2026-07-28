@@ -8,16 +8,16 @@
 
     <div class="flex items-center gap-3">
       <button
-        class="p-1.5 rounded text-ink-muted hover:bg-canvas transition-colors"
+        class="p-1.5 rounded text-ink-muted hover:bg-canvasDark transition-colors"
         title="刷新表列表"
         @click="tables.fetchAll()"
       >
-        <RefreshCw :size="15" :stroke-width="1.75" />
+        <RefreshCw :size="16" :stroke-width="1.75" />
       </button>
 
       <div class="relative" ref="menuRef">
         <button
-          class="flex items-center gap-2 px-2.5 py-1.5 rounded text-sm text-ink-muted hover:bg-canvas transition-colors"
+          class="flex items-center gap-2 px-2.5 py-1.5 rounded text-sm text-ink-muted hover:bg-canvasDark transition-colors"
           @click="menuOpen = !menuOpen"
         >
           <span class="w-6 h-6 rounded-full bg-accent text-white text-xs font-medium flex items-center justify-center">
@@ -30,7 +30,7 @@
           class="absolute right-0 top-full mt-1 w-40 bg-panel border border-line rounded shadow-pop py-1 z-20"
         >
           <button
-            class="w-full text-left px-3 py-2 text-sm text-ink-muted hover:bg-canvas transition-colors flex items-center gap-2"
+            class="w-full text-left px-3 py-2 text-sm text-ink-muted hover:bg-canvasDark transition-colors flex items-center gap-2"
             @click="onLogout"
           >
             <LogOut :size="14" :stroke-width="1.75" />

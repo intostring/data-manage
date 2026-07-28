@@ -6,24 +6,48 @@
   html {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    font-size: 14px;
   }
   body {
-    @apply bg-canvas text-ink font-sans text-sm antialiased;
+    @apply bg-canvas text-ink font-sans antialiased;
     margin: 0;
   }
   * {
     box-sizing: border-box;
   }
   ::selection {
-    background: #FED7AA;
-    color: #0A0A0A;
+    background: #3B82F6;
+    color: #FFFFFF;
+  }
+  /* 暗色滚动条 */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0F172A;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #475569;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #64748B;
+  }
+  /* 输入框自动填充暗色 */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus {
+    -webkit-text-fill-color: #F1F5F9;
+    -webkit-box-shadow: 0 0 0 1000px #273449 inset;
+    transition: background-color 5000s ease-in-out 0s;
   }
 }
 
 @layer components {
   .input-base {
-    @apply w-full px-3 py-2 bg-panel border border-line rounded text-ink
-           focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent
+    @apply w-full px-3 py-2 bg-panelLight border border-line rounded text-ink text-sm
+           focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30
            transition-colors placeholder:text-ink-faint;
   }
   .label-base {

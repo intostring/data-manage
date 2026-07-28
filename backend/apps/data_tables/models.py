@@ -218,6 +218,141 @@ class AdviserTradingPosition(models.Model):
         db_table_comment = '投顾持仓数据'
 
 
+# ==================== FOF 数据表 ====================
+
+
+class FundCodesLh(models.Model):
+    """FOF - 基金代码表"""
+    id = models.BigAutoField(primary_key=True)
+    fund_code = models.CharField(unique=True, max_length=50, blank=True, null=True, db_comment='基金代码')
+    fund_name = models.CharField(max_length=50, blank=True, null=True, db_comment='基金简称')
+    cate_code_1 = models.CharField(max_length=50, blank=True, null=True, db_comment='一级分类代码')
+    cate_name_1 = models.CharField(max_length=50, blank=True, null=True, db_comment='一级分类简称')
+    cate_code_2 = models.CharField(max_length=50, blank=True, null=True, db_comment='二级分类代码')
+    cate_name_2 = models.CharField(max_length=50, blank=True, null=True, db_comment='二级分类简称')
+    cate_code_3 = models.CharField(max_length=50, blank=True, null=True, db_comment='三级分类代码')
+    cate_name_3 = models.CharField(max_length=50, blank=True, null=True, db_comment='三级分类简称')
+    tips = models.CharField(max_length=255, blank=True, null=True, db_comment='说明')
+    bm_code_def = models.CharField(max_length=50, blank=True, null=True, db_comment='默认基准代码')
+    bm_name_def = models.CharField(max_length=50, blank=True, null=True, db_comment='默认基准简称')
+
+    class Meta:
+        managed = False
+        db_table = 'fund_codes_lh'
+        db_table_comment = '基金代码表'
+
+
+class FundNetValue(models.Model):
+    """FOF - 基金净值表"""
+    id = models.BigAutoField(primary_key=True, db_column='id')
+    fund_code = models.CharField(max_length=20, db_comment='基金代码')
+    fund_name = models.CharField(max_length=50, blank=True, null=True, db_comment='基金简称')
+    trade_date = models.DateField(db_comment='交易日期')
+    unit_nav = models.DecimalField(max_digits=18, decimal_places=6, blank=True, null=True, db_comment='单位净值')
+    accum_nav = models.DecimalField(max_digits=18, decimal_places=6, blank=True, null=True, db_comment='累计净值')
+    adjust_nav = models.DecimalField(max_digits=18, decimal_places=6, blank=True, null=True, db_comment='复权净值')
+    create_time = models.DateTimeField(db_comment='创建时间')
+    update_time = models.DateTimeField(db_comment='更新时间')
+
+    class Meta:
+        managed = False
+        db_table = 'fund_net_value'
+        unique_together = (('fund_code', 'trade_date'),)
+        db_table_comment = '基金净值表'
+
+
+class FundShareChg(models.Model):
+    """FOF - 基金份额变动表"""
+    id = models.BigAutoField(primary_key=True, db_column='id')
+    product_id = models.CharField(max_length=50, db_comment='产品代码')
+    product_name = models.CharField(max_length=50, blank=True, null=True, db_comment='产品简称')
+    trade_date = models.DateField(db_comment='份额变动日期')
+    confirm_date = models.DateField(blank=True, null=True, db_comment='确认日期')
+    fund_code = models.CharField(max_length=50, db_comment='基金代码')
+    fund_name = models.CharField(max_length=50, blank=True, null=True, db_comment='基金简称')
+    share_chg = models.DecimalField(max_digits=18, decimal_places=6, blank=True, null=True, db_comment='份额变动')
+    price = models.DecimalField(max_digits=18, decimal_places=8, blank=True, null=True, db_comment='变动价格')
+    market_value = models.DecimalField(max_digits=18, decimal_places=2, blank=True, null=True, db_comment='市值')
+    cost = models.DecimalField(max_digits=18, decimal_places=2, blank=True, null=True, db_comment='费用')
+    tips = models.CharField(max_length=100, blank=True, null=True, db_comment='操作说明')
+    is_clear = models.IntegerField(blank=True, null=True, db_comment='全部赎回为1；否则为0')
+    chg_type = models.IntegerField(db_comment='份额变动类型')
+    chg_name = models.CharField(max_length=50, blank=True, null=True, db_comment='份额变动名称')
+
+    class Meta:
+        managed = False
+        db_table = 'fund_share_chg'
+        unique_together = (('product_id', 'trade_date', 'fund_code', 'chg_type'),)
+        db_table_comment = '基金份额变动表'
+
+
+class ProductFundInfo(models.Model):
+    """FOF - 产品持仓基金信息"""
+    id = models.BigAutoField(primary_key=True, db_column='id')
+    product_id = models.CharField(max_length=50, db_comment='产品代码')
+    product_name = models.CharField(max_length=50, blank=True, null=True, db_comment='产品简称')
+    fund_code = models.CharField(max_length=50, db_comment='基金代码')
+    fund_name = models.CharField(max_length=50, blank=True, null=True, db_comment='基金简称')
+    full_name = models.CharField(max_length=255, blank=True, null=True, db_comment='基金全称')
+    pr_order = models.IntegerField(db_comment='申赎序号')
+    purchase_date = models.DateField(db_comment='申购日期')
+    redeem_date = models.DateField(blank=True, null=True, db_comment='赎回日期')
+    hd_state = models.IntegerField(blank=True, null=True, db_comment='持有状态')
+    cate_code_l1 = models.CharField(max_length=255, blank=True, null=True, db_comment='一级分类代码')
+    cate_name_l1 = models.CharField(max_length=255, blank=True, null=True, db_comment='一级分类简称')
+    cate_code_l2 = models.CharField(max_length=255, blank=True, null=True, db_comment='二级分类代码')
+    cate_name_l2 = models.CharField(max_length=255, blank=True, null=True, db_comment='二级分类简称')
+    cate_code_l3 = models.CharField(max_length=255, blank=True, null=True, db_comment='三级分类代码')
+    cate_name_l3 = models.CharField(max_length=255, blank=True, null=True, db_comment='三级分类简称')
+
+    class Meta:
+        managed = False
+        db_table = 'product_fund_info'
+        unique_together = (('product_id', 'fund_code', 'purchase_date', 'pr_order'),)
+        db_table_comment = '产品持仓基金信息'
+
+
+class ProductHoldingDailyGs(models.Model):
+    """FOF - 产品每日持仓(估值)"""
+    id = models.BigAutoField(primary_key=True, db_column='id')
+    product_id = models.CharField(max_length=50, db_comment='FOF母基金ID')
+    product_name = models.CharField(max_length=50, blank=True, null=True, db_comment='FOF母基金简称')
+    trade_date = models.DateField(db_comment='交易日')
+    fund_code = models.CharField(max_length=50, db_comment='基金代码')
+    fund_name = models.CharField(max_length=50, blank=True, null=True, db_comment='基金简称')
+    net_value = models.FloatField(blank=True, null=True, db_comment='基金净值')
+    share_chg = models.FloatField(blank=True, null=True, db_comment='申赎')
+    hh_amt = models.FloatField(blank=True, null=True, db_comment='互换金额')
+    hh_chg = models.FloatField(blank=True, null=True, db_comment='互换金额变动')
+    jiexi = models.FloatField(blank=True, null=True, db_comment='结息')
+    cash_back = models.FloatField(blank=True, null=True, db_comment='本金返还')
+    tips = models.CharField(max_length=255, blank=True, null=True, db_comment='备注')
+
+    class Meta:
+        managed = False
+        db_table = 'product_holding_daily_gs'
+        unique_together = (('product_id', 'trade_date', 'fund_code'),)
+        db_table_comment = '产品每日持仓(估值)'
+
+
+class ProductHoldingDailyMix(models.Model):
+    """FOF - 产品每日持仓(混合)"""
+    id = models.BigAutoField(primary_key=True, db_column='id')
+    product_id = models.CharField(max_length=50, db_comment='FOF母基金ID')
+    product_name = models.CharField(max_length=50, blank=True, null=True, db_comment='FOF母基金简称')
+    trade_date = models.DateField(db_comment='交易日')
+    fund_code = models.CharField(max_length=50, db_comment='基金代码')
+    fund_name = models.CharField(max_length=50, blank=True, null=True, db_comment='基金简称')
+    market_value = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='基金市值')
+    adj_item = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='调节项')
+
+    class Meta:
+        managed = False
+        db_table = 'product_holding_daily_mix'
+        unique_together = (('product_id', 'trade_date', 'fund_code'),)
+        db_table_comment = '产品每日持仓(混合)'
+
+
 class AdviserTradingTrade(models.Model):
     id = models.BigAutoField(primary_key=True)
     login_account = models.CharField(max_length=100, blank=True, null=True, db_comment='登录账户')
