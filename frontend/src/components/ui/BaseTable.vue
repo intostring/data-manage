@@ -1,5 +1,5 @@
 <template>
-  <div class="overflow-auto max-h-[70vh]">
+  <div class="overflow-auto max-h-[70vh]" @click="closeFilterPopup">
     <table class="w-full text-sm border-collapse">
       <thead>
         <tr class="bg-canvasDark border-b border-line">
@@ -13,33 +13,62 @@
             ]"
             :style="isFrozen(idx) ? { left: getFrozenOffset(idx) } : {}"
           >
-            <div
-              :class="col.sortable ? 'cursor-pointer hover:text-ink inline-flex items-center gap-1' : 'inline-flex items-center gap-1'"
-              @click="col.sortable && toggleSort(col.key)"
-            >
-              {{ col.label }}
-              <span v-if="col.sortable && sortKey === col.key" class="text-accent">
-                {{ sortOrder === 'asc' ? '↑' : '↓' }}
+            <div class="flex items-center gap-1 relative">
+              <span
+                :class="col.sortable ? 'cursor-pointer hover:text-ink' : ''"
+                @click="col.sortable && toggleSort(col.key)"
+              >
+                {{ col.label }}
+                <span v-if="col.sortable && sortKey === col.key" class="text-accent">
+                  {{ sortOrder === 'asc' ? '↑' : '↓' }}
+                </span>
               </span>
-              <!-- 该列有筛选值时显示小圆点指示 -->
-              <span v-if="col.filterable && filterValues[col.key]" class="w-1.5 h-1.5 rounded-full bg-accent inline-block"></span>
-            </div>
-            <!-- 筛选输入框 -->
-            <div v-if="col.filterable && showFilters" class="mt-1.5 relative">
-              <input
-                :value="filterValues[col.key] || ''"
-                :placeholder="col.label"
-                class="w-40 max-w-full text-xs px-2 py-1 pr-5 border border-line rounded bg-panelLight focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30 text-ink placeholder:text-ink-faint"
-                @input="onFilterInput(col.key, $event.target.value)"
-                @keydown.esc="clearFilter(col.key)"
-              />
-              <!-- 清空按钮 -->
+              <!-- 筛选图标按钮 -->
               <button
-                v-if="filterValues[col.key]"
-                class="absolute right-1 top-1/2 -translate-y-1/2 w-4 h-4 flex items-center justify-center text-ink-faint hover:text-danger text-xs leading-none"
-                title="清空"
-                @click="clearFilter(col.key)"
-              >×</button>
+                v-if="col.filterable"
+                class="relative flex items-center justify-center w-4 h-4 rounded hover:bg-panelLight transition-colors"
+                :class="isFilterActive(col.key) ? 'text-accent' : 'text-ink-faint'"
+                @click.stop="toggleFilterPopup(col.key)"
+                :title="isFilterActive(col.key) ? '筛选: ' + filterSummary(col.key) : '筛选'"
+              >
+                <svg class="w-3 h-3" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M1.5 1.5h13a.5.5 0 0 1 .4.8L10 8v6.5a.5.5 0 0 1-.7.45L7 14V8L1.1 2.3a.5.5 0 0 1 .4-.8z"/>
+                </svg>
+                <!-- 激活指示点 -->
+                <span v-if="isFilterActive(col.key)" class="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-accent"></span>
+              </button>
+              <!-- 筛选弹窗 -->
+              <div
+                v-if="filterPopupKey === col.key"
+                class="absolute top-full left-0 mt-1 z-50 bg-panel border border-line rounded-lg shadow-xl p-3 min-w-[220px]"
+                @click.stop
+              >
+                <select
+                  v-model="filterDraft.op"
+                  class="w-full mb-2 px-2 py-1 text-xs border border-line rounded bg-panelLight text-ink focus:border-accent focus:outline-none"
+                >
+                  <option v-for="opt in operatorOptions(col)" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+                </select>
+                <input
+                  v-if="!isNullOperator(filterDraft.op)"
+                  v-model="filterDraft.value"
+                  :type="inputTypeForFilter(col)"
+                  :placeholder="col.label"
+                  class="w-full mb-2 px-2 py-1 text-xs border border-line rounded bg-panelLight text-ink focus:border-accent focus:outline-none placeholder:text-ink-faint"
+                  @keydown.enter="applyFilter(col.key)"
+                />
+                <div class="flex items-center gap-2">
+                  <button
+                    class="flex-1 px-2 py-1 text-xs bg-accent text-white rounded hover:opacity-90 transition-opacity"
+                    @click="applyFilter(col.key)"
+                  >应用</button>
+                  <button
+                    v-if="isFilterActive(col.key)"
+                    class="px-2 py-1 text-xs border border-line text-ink-muted rounded hover:bg-canvasDark transition-colors"
+                    @click="clearFilterPopup(col.key)"
+                  >清除</button>
+                </div>
+              </div>
             </div>
           </th>
           <th v-if="$slots.actions" class="text-right font-semibold text-ink-muted px-3 py-2.5 border-b border-line sticky top-0 bg-canvasDark z-20">
@@ -57,7 +86,7 @@
           <td
             v-for="(col, cIdx) in columns"
             :key="col.key"
-            class="px-3 py-2 text-ink"
+            class="px-3 py-2 text-ink whitespace-nowrap"
             :class="[
               col.mono ? 'font-mono text-xs' : '',
               isFrozen(cIdx) ? 'sticky z-10 ' + (idx % 2 === 1 ? 'bg-canvas' : 'bg-panel') : '',
@@ -106,47 +135,38 @@ import BaseModal from './BaseModal.vue'
 import BaseButton from './BaseButton.vue'
 
 const props = defineProps({
-  columns: { type: Array, required: true }, // [{ key, label, sortable, filterable, mono, type, format, expandable }]
+  columns: { type: Array, required: true },
   rows: { type: Array, default: () => [] },
-  // 排序状态受控：由父组件传入，排序由后端处理
   sortKey: { type: String, default: '' },
   sortOrder: { type: String, default: 'asc' },
-  // 筛选值：{ colKey: value }
+  // 筛选状态：{ colKey: { op, value } }
   filterValues: { type: Object, default: () => ({}) },
-  // 是否显示筛选输入框（由父组件控制）
   showFilters: { type: Boolean, default: true },
-  // 冻结前 N 列（水平滚动时保持可见），默认冻结第 1 列
   frozenCount: { type: Number, default: 1 },
 })
 const emit = defineEmits(['sort', 'filter', 'clear-filter'])
 
-// 判断指定列索引是否被冻结
+// 冻结列
 function isFrozen(idx) {
   return idx < props.frozenCount
 }
-
-// 计算冻结列的 left 偏移量（需与实际列宽匹配）
-// 由于列宽不固定，这里用估算值：每列约 120px
 const frozenOffsets = []
 function getFrozenOffset(idx) {
   if (frozenOffsets[idx] !== undefined) return frozenOffsets[idx] + 'px'
   let offset = 0
-  for (let i = 0; i < idx; i++) {
-    offset += 120
-  }
+  for (let i = 0; i < idx; i++) offset += 120
   frozenOffsets[idx] = offset
   return offset + 'px'
 }
 
+// 排序
 function toggleSort(key) {
-  // 通知父组件切换排序，由父组件决定新状态并传回 sortKey/sortOrder
   let newKey = key
   let newOrder = 'asc'
   if (props.sortKey === key) {
     if (props.sortOrder === 'asc') {
       newOrder = 'desc'
     } else {
-      // 已是降序，清除排序
       newKey = ''
       newOrder = 'asc'
     }
@@ -154,17 +174,100 @@ function toggleSort(key) {
   emit('sort', { key: newKey, order: newOrder })
 }
 
-let filterTimers = {}
-function onFilterInput(key, value) {
-  clearTimeout(filterTimers[key])
-  filterTimers[key] = setTimeout(() => {
-    emit('filter', { key, value })
-  }, 400)
+// ==================== Navicat 风格筛选 ====================
+
+// 操作符选项
+const ALL_OPERATORS = [
+  { value: 'contains', label: '包含' },
+  { value: 'not_contains', label: '不包含' },
+  { value: 'eq', label: '等于' },
+  { value: 'ne', label: '不等于' },
+  { value: 'gt', label: '大于' },
+  { value: 'lt', label: '小于' },
+  { value: 'gte', label: '大于等于' },
+  { value: 'lte', label: '小于等于' },
+  { value: 'empty', label: '为空' },
+  { value: 'not_empty', label: '不为空' },
+]
+
+const STR_OPERATORS = [
+  { value: 'contains', label: '包含' },
+  { value: 'not_contains', label: '不包含' },
+  { value: 'eq', label: '等于' },
+  { value: 'ne', label: '不等于' },
+  { value: 'empty', label: '为空' },
+  { value: 'not_empty', label: '不为空' },
+]
+
+function operatorOptions(col) {
+  if (col.type === 'int' || col.type === 'float') return ALL_OPERATORS
+  if (col.type === 'date' || col.type === 'datetime') return ALL_OPERATORS
+  return STR_OPERATORS
 }
 
-function clearFilter(key) {
-  emit('clear-filter', key)
+function isNullOperator(op) {
+  return op === 'empty' || op === 'not_empty'
 }
+
+function inputTypeForFilter(col) {
+  if (col.type === 'date' || col.type === 'datetime') return 'date'
+  if (col.type === 'int' || col.type === 'float') return 'text'
+  return 'text'
+}
+
+// 筛选弹窗状态
+const filterPopupKey = ref('')
+const filterDraft = ref({ op: 'contains', value: '' })
+
+function toggleFilterPopup(colKey) {
+  if (filterPopupKey.value === colKey) {
+    filterPopupKey.value = ''
+    return
+  }
+  filterPopupKey.value = colKey
+  const existing = props.filterValues[colKey]
+  if (existing) {
+    filterDraft.value = { op: existing.op || 'contains', value: existing.value || '' }
+  } else {
+    // 根据列类型设置默认操作符
+    const col = props.columns.find((c) => c.key === colKey)
+    const defaultOp = (col && (col.type === 'int' || col.type === 'float' || col.type === 'date' || col.type === 'datetime')) ? 'eq' : 'contains'
+    filterDraft.value = { op: defaultOp, value: '' }
+  }
+}
+
+function closeFilterPopup() {
+  filterPopupKey.value = ''
+}
+
+function applyFilter(colKey) {
+  const draft = filterDraft.value
+  if (isNullOperator(draft.op)) {
+    emit('filter', { key: colKey, value: { op: draft.op, value: '' } })
+  } else if (draft.value) {
+    emit('filter', { key: colKey, value: { op: draft.op, value: draft.value } })
+  }
+  filterPopupKey.value = ''
+}
+
+function clearFilterPopup(colKey) {
+  emit('clear-filter', colKey)
+  filterPopupKey.value = ''
+}
+
+function isFilterActive(colKey) {
+  const f = props.filterValues[colKey]
+  return f && (f.value || isNullOperator(f.op))
+}
+
+function filterSummary(colKey) {
+  const f = props.filterValues[colKey]
+  if (!f) return ''
+  const opLabel = [...ALL_OPERATORS].find((o) => o.value === f.op)?.label || f.op
+  return `${opLabel} ${f.value || ''}`
+}
+
+// ==================== 格式化与详情弹窗 ====================
 
 function formatCell(value, col) {
   if (value === null || value === undefined || value === '') return ''
@@ -175,7 +278,19 @@ function formatCell(value, col) {
   if (col.format === 'decimal2') {
     return isNaN(n) ? value : n.toFixed(2)
   }
-  if (col.type === 'datetime' || col.type === 'date') {
+  if (col.format === 'decimal4') {
+    return isNaN(n) ? value : n.toFixed(4)
+  }
+  if (col.type === 'date') {
+    // 日期类型只显示 YYYY-MM-DD
+    const d = new Date(value)
+    if (isNaN(d)) return value
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    return `${y}-${m}-${day}`
+  }
+  if (col.type === 'datetime') {
     const d = new Date(value)
     if (isNaN(d)) return value
     return d.toLocaleString('zh-CN', { hour12: false })
@@ -184,12 +299,10 @@ function formatCell(value, col) {
   return value
 }
 
-// 长文本/JSON 详情弹窗
 const detailShow = ref(false)
 const detailTitle = ref('')
 const detailContent = ref('')
 
-// 判断该单元格是否需要"截断+点击展开"
 function hasExpandableContent(value) {
   if (value === null || value === undefined || value === '') return false
   return String(value).length > 30
@@ -197,7 +310,6 @@ function hasExpandableContent(value) {
 
 function openDetail(label, value) {
   detailTitle.value = `${label} - 详情`
-  // 尝试格式化 JSON，失败则原样展示
   let content = value
   if (typeof value === 'string') {
     const trimmed = value.trim()

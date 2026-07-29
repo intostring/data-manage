@@ -14,8 +14,9 @@ for entry in table_registry.all():
             pass
         _VS.model = model
         _VS.serializer_class = serializer
-        # 动态生成 FilterSet 并设为类属性，DRF 的 DjangoFilterBackend 直接读取此属性
-        _VS.filterset_class = views._make_filterset(model)
+        # 表无 id 字段时，使用模型 Meta.ordering 作为默认排序，避免按 id 排序报错
+        if not any(f.name == 'id' for f in model._meta.fields):
+            _VS.ordering = list(model._meta.ordering) if model._meta.ordering else None
         return _VS
 
     router.register(entry.key, _make_viewset(), basename=f'table-{entry.key}')

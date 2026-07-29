@@ -1,6 +1,5 @@
 from django.db import models
 from django.http import HttpResponse
-from django_filters import rest_framework as filters
 from rest_framework import viewsets
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.filters import OrderingFilter
@@ -10,40 +9,70 @@ from rest_framework.response import Response
 from .registry import table_registry
 
 
-def _make_filterset(model):
-    """为指定 model 动态生成 FilterSet。
+# 筛选操作符 → Django ORM lookup 映射
+FILTER_OPS = {
+    'eq': '',            # 精确匹配
+    'ne': '',            # 不等于（exclude）
+    'contains': 'icontains',
+    'not_contains': 'icontains',  # 不包含（exclude）
+    'gt': 'gt',
+    'lt': 'lt',
+    'gte': 'gte',
+    'lte': 'lte',
+    'empty': 'isnull',   # 为空
+    'not_empty': 'isnull',  # 不为空（exclude isnull）
+}
 
-    字符串/文本字段用 icontains 模糊匹配，其余字段精确匹配。
+
+def _apply_advanced_filters(qs, request, model):
+    """解析 filter.<col>.<op>=value 查询参数并应用到 queryset
+
+    支持的操作符：eq, ne, contains, not_contains, gt, lt, gte, lte, empty, not_empty
     """
-    meta = model._meta
-    attrs = {}
-    for f in meta.fields:
-        if isinstance(f, (models.CharField, models.TextField)):
-            attrs[f.name] = filters.CharFilter(field_name=f.name, lookup_expr='icontains')
-    FilterCls = type(
-        f'{model.__name__}FilterSet',
-        (filters.FilterSet,),
-        {**attrs, 'Meta': type('Meta', (), {'model': model, 'fields': '__all__'})},
-    )
-    return FilterCls
+    valid_fields = {f.name for f in model._meta.fields}
+    for k, v in request.query_params.items():
+        if not k.startswith('filter.'):
+            continue
+        parts = k[len('filter.'):].split('.')
+        if len(parts) != 2:
+            continue
+        col, op = parts
+        if col not in valid_fields or op not in FILTER_OPS:
+            continue
+        lookup = FILTER_OPS[op]
+        if op in ('empty', 'not_empty'):
+            # 为空/不为空：不需要值
+            is_null = True
+            if op == 'empty':
+                qs = qs.filter(**{f'{col}__isnull': True}) | qs.filter(**{col: ''})
+            else:
+                qs = qs.filter(**{f'{col}__isnull': False}).exclude(**{col: ''})
+        elif op in ('ne', 'not_contains'):
+            # 排除型
+            field_lookup = f'{col}__{lookup}' if lookup else col
+            qs = qs.exclude(**{field_lookup: v})
+        else:
+            field_lookup = f'{col}__{lookup}' if lookup else col
+            qs = qs.filter(**{field_lookup: v})
+    return qs
 
 
 class DynamicModelViewSet(viewsets.ModelViewSet):
     """通用 ViewSet，通过类属性 model / serializer_class 绑定具体表。
 
     子类（由 urls.py 动态生成）设置这两个属性即可获得完整 CRUD。
-    支持排序（ordering 参数）与筛选（字段名=值）。
+    支持排序（ordering 参数）与 Navicat 风格多操作符筛选。
     """
     model = None
     serializer_class = None
-    filterset_class = None
-    filter_backends = [OrderingFilter, filters.DjangoFilterBackend]
+    filter_backends = [OrderingFilter]
     ordering_fields = '__all__'
     # 默认按 id 倒序，避免分页时 UnorderedObjectListWarning
     ordering = ['-id']
 
     def get_queryset(self):
         qs = self.model.objects.all()
+        qs = _apply_advanced_filters(qs, self.request, self.model)
         return qs
 
 
@@ -111,15 +140,8 @@ def _apply_filters(qs, request, entry):
                 q |= Q(**{f'{f.name}__icontains': search})
         qs = qs.filter(q)
 
-    # 字段精确/模糊筛选
-    for f in entry.model._meta.fields:
-        val = request.query_params.get(f.name)
-        if not val:
-            continue
-        if isinstance(f, (models.CharField, models.TextField)):
-            qs = qs.filter(**{f'{f.name}__icontains': val})
-        else:
-            qs = qs.filter(**{f.name: val})
+    # Navicat 风格多操作符筛选
+    qs = _apply_advanced_filters(qs, request, entry.model)
 
     # 排序
     ordering = request.query_params.get('ordering', '').strip()
@@ -194,7 +216,7 @@ def _excel_cell(val):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def table_import(request, key):
-    """从 Excel(.xlsx) 导入数据到已注册表。
+    """从 Excel(.xlsx) 导入数据到已注册表（存在则更新，不存在则新增，完全重复则跳过）。
 
     multipart/form-data:
         file: .xlsx 文件
@@ -243,9 +265,13 @@ def table_import(request, key):
     if not col_map:
         return Response({'detail': '未匹配到任何有效字段，请检查表头'}, status=400)
 
-    # 构造 Model 实例并批量创建
+    # 获取模型的唯一约束字段组合（unique_together + 字段级 unique）
     field_types = {c['name']: c['type'] for c in cols}
-    objs = []
+    unique_fields = _get_unique_fields(entry.model)
+
+    created_count = 0
+    updated_count = 0
+    skipped_count = 0
     errors = []
     for row_idx, row in enumerate(rows_iter, start=2):
         if row is None or all(v is None or v == '' for v in row):
@@ -270,21 +296,72 @@ def table_import(request, key):
                 errors.append(f'第 {row_idx} 行字段 {fn} 值"{val}"类型转换失败')
                 continue
             kwargs[fn] = val
-        if kwargs:
-            objs.append(entry.model(**kwargs))
+        if not kwargs:
+            continue
 
-    if not objs:
-        return Response({'detail': '没有可导入的数据行', 'errors': errors}, status=400)
-
-    try:
-        created = entry.model.objects.bulk_create(objs)
-    except Exception as e:
-        return Response({'detail': f'导入失败: {e}', 'errors': errors}, status=400)
+        # 按 unique 字段查找已有记录
+        lookup = {}
+        if unique_fields:
+            for uf in unique_fields:
+                if uf in kwargs:
+                    lookup[uf] = kwargs[uf]
+        if lookup:
+            existing = entry.model.objects.filter(**lookup).first()
+            if existing:
+                # 检查是否有变化
+                changed = False
+                for k, v in kwargs.items():
+                    if getattr(existing, k, None) != v:
+                        setattr(existing, k, v)
+                        changed = True
+                if changed:
+                    try:
+                        existing.save()
+                        updated_count += 1
+                    except Exception as e:
+                        errors.append(f'第 {row_idx} 行更新失败: {e}')
+                else:
+                    skipped_count += 1
+                continue
+        # 不存在则新增
+        try:
+            entry.model.objects.create(**kwargs)
+            created_count += 1
+        except Exception as e:
+            errors.append(f'第 {row_idx} 行新增失败: {e}')
 
     return Response({
-        'imported': len(created),
+        'created': created_count,
+        'updated': updated_count,
+        'skipped': skipped_count,
         'errors': errors,
     }, status=201)
+
+
+def _get_unique_fields(model):
+    """获取模型的唯一约束字段列表。
+
+    优先使用 unique_together 中的字段组合；
+    如果没有 unique_together，则收集字段级 unique=True 的字段。
+    """
+    meta = model._meta
+    # unique_together
+    if meta.unique_together:
+        return list(meta.unique_together[0])
+    # Django 4.x constraints (UniqueConstraint)
+    unique_constraint_fields = []
+    for constraint in meta.constraints:
+        if hasattr(constraint, 'fields') and constraint.fields:
+            unique_constraint_fields = list(constraint.fields)
+            break
+    if unique_constraint_fields:
+        return unique_constraint_fields
+    # 字段级 unique=True
+    unique_single = []
+    for f in meta.fields:
+        if f.unique and not f.primary_key:
+            unique_single.append(f.name)
+    return unique_single
 
 
 @api_view(['GET'])

@@ -81,11 +81,18 @@ class DynamicTableDetailView(APIView):
             else:
                 order_by, order_dir = ordering, 'asc'
 
-        # 按字段筛选：filter.<col>=value 形式
+        # 按字段筛选：filter.<col>.<op>=value 形式（Navicat 风格多操作符）
         filters = {}
         for k, v in request.query_params.items():
-            if k.startswith('filter.') and v:
-                filters[k[len('filter.'):]] = v
+            if not k.startswith('filter.') or not v:
+                continue
+            parts = k[len('filter.'):].split('.')
+            if len(parts) == 2:
+                col, op = parts
+                filters.setdefault(col, {})[op] = v
+            elif len(parts) == 1:
+                # 旧格式兼容：filter.<col>=value
+                filters[parts[0]] = v
 
         rows, total = services.fetch_rows(
             meta, limit=page_size, offset=offset, search=search,
@@ -122,8 +129,14 @@ def _parse_query_params(request):
             order_by, order_dir = ordering, 'asc'
     filters = {}
     for k, v in request.query_params.items():
-        if k.startswith('filter.') and v:
-            filters[k[len('filter.'):]] = v
+        if not k.startswith('filter.') or not v:
+            continue
+        parts = k[len('filter.'):].split('.')
+        if len(parts) == 2:
+            col, op = parts
+            filters.setdefault(col, {})[op] = v
+        elif len(parts) == 1:
+            filters[parts[0]] = v
     return search, order_by, order_dir, filters
 
 
@@ -192,12 +205,21 @@ def _dyn_excel_cell(val):
     return val
 
 
+def _norm_val(v):
+    """规范化值用于比较：None 与空串视为相同"""
+    if v is None or v == '':
+        return None
+    return v
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def dynamic_table_import(request, key):
-    """向已存在的动态表追加导入 Excel(.xlsx) 数据。
+    """向已存在的动态表导入 Excel(.xlsx) 数据。
 
-    表头需与建表时的列名匹配。已存在的数据不会被清空。
+    存在则更新，不存在则新增，完全重复则跳过。
+    匹配依据：动态表的唯一索引列；若无唯一索引，则按所有非 id 列匹配。
+    表头需与建表时的列名匹配。
     """
     try:
         meta = TableMeta.objects.get(key=key)
@@ -238,11 +260,21 @@ def dynamic_table_import(request, key):
         return Response({'detail': '未匹配到任何有效字段，请检查表头'}, status=400)
 
     field_types = {c['name']: c['type'] for c in cols}
-    rows_to_insert = []
+    # 唯一标识列：优先唯一索引；无则用所有非 id 列
+    unique_fields = services.get_unique_index_columns(meta)
+    if not unique_fields:
+        unique_fields = [c['name'] for c in cols if c['name'] != 'id']
+    all_col_names = [c['name'] for c in cols if c['name'] != 'id']
+
+    created_count = 0
+    updated_count = 0
+    skipped_count = 0
     errors = []
+    has_data = False
     for row_idx, row in enumerate(rows_iter, start=2):
         if row is None or all(v is None or v == '' for v in row):
             continue
+        has_data = True
         record = {}
         for idx, fn in col_map.items():
             if idx >= len(row):
@@ -256,19 +288,56 @@ def dynamic_table_import(request, key):
                     val = int(float(val))
                 elif t == 'float':
                     val = float(val)
+                elif t == 'bool':
+                    val = 1 if str(val).strip() in ('1', 'true', 'True', '是') else 0
             except (ValueError, TypeError):
                 errors.append(f'第 {row_idx} 行字段 {fn} 值"{val}"类型转换失败')
                 continue
             record[fn] = val
-        if record:
-            rows_to_insert.append(record)
+        if not record:
+            continue
 
-    if not rows_to_insert:
+        # 构建匹配 lookup（基于唯一标识列）
+        lookup = {}
+        for uf in unique_fields:
+            if uf in record:
+                lookup[uf] = record[uf]
+            elif uf in all_col_names:
+                lookup[uf] = None
+
+        existing_id = services.find_row_id_by_lookup(meta, lookup) if lookup else None
+
+        if existing_id is not None:
+            existing = services.get_row_values_by_id(meta, existing_id, all_col_names)
+            update_fields = {}
+            changed = False
+            for k, v in record.items():
+                if _norm_val(existing.get(k)) != _norm_val(v):
+                    update_fields[k] = v
+                    changed = True
+            if changed:
+                try:
+                    services.update_row_by_id(meta, existing_id, update_fields)
+                    updated_count += 1
+                except Exception as e:
+                    errors.append(f'第 {row_idx} 行更新失败: {e}')
+            else:
+                skipped_count += 1
+        else:
+            try:
+                services.insert_single_row(meta, record)
+                created_count += 1
+            except Exception as e:
+                errors.append(f'第 {row_idx} 行新增失败: {e}')
+
+    if not has_data:
         return Response({'detail': '没有可导入的数据行', 'errors': errors}, status=400)
 
-    written = services.insert_rows(meta, rows_to_insert)
+    services.recount_rows(meta)
     return Response({
-        'imported': written,
+        'created': created_count,
+        'updated': updated_count,
+        'skipped': skipped_count,
         'errors': errors,
     }, status=201)
 

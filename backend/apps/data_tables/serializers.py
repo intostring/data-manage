@@ -12,10 +12,14 @@ from .models import (
     AdviserTradingTrade,
     FundCodesLh,
     FundNetValue,
+    FundNetValueHypo,
     FundShareChg,
     ProductFundInfo,
+    ProductHoldingDaily,
     ProductHoldingDailyGs,
     ProductHoldingDailyMix,
+    ProductNav,
+    ProductNav2,
 )
 from .registry import table_registry
 
@@ -88,6 +92,12 @@ class FundNetValueSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+class FundNetValueHypoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FundNetValueHypo
+        fields = '__all__'
+
+
 class FundShareChgSerializer(serializers.ModelSerializer):
     class Meta:
         model = FundShareChg
@@ -112,6 +122,24 @@ class ProductHoldingDailyMixSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+class ProductHoldingDailySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductHoldingDaily
+        fields = '__all__'
+
+
+class ProductNavSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductNav
+        fields = '__all__'
+
+
+class ProductNav2Serializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductNav2
+        fields = '__all__'
+
+
 # 注册全部已有表：URL 标识 / Model / Serializer / 显示名 / 分组
 # MOM 数据
 table_registry.register('account_record', AccountRecord, AccountRecordSerializer, '账户记录', 'mom')
@@ -126,7 +154,11 @@ table_registry.register('adviser_trading_trade', AdviserTradingTrade, AdviserTra
 # FOF 数据
 table_registry.register('fund_codes_lh', FundCodesLh, FundCodesLhSerializer, '基金代码', 'fof')
 table_registry.register('fund_net_value', FundNetValue, FundNetValueSerializer, '基金净值', 'fof')
-table_registry.register('fund_share_chg', FundShareChg, FundShareChgSerializer, '份额变动', 'fof')
-table_registry.register('product_fund_info', ProductFundInfo, ProductFundInfoSerializer, '持仓基金信息', 'fof')
-table_registry.register('product_holding_daily_gs', ProductHoldingDailyGs, ProductHoldingDailyGsSerializer, '每日持仓(估值)', 'fof')
+table_registry.register('fund_net_value_hypo', FundNetValueHypo, FundNetValueHypoSerializer, '虚拟净值', 'fof')
+table_registry.register('fund_share_chg', FundShareChg, FundShareChgSerializer, '基金申赎', 'fof')
+table_registry.register('product_fund_info', ProductFundInfo, ProductFundInfoSerializer, '持仓基金', 'fof')
+table_registry.register('product_holding_daily_gs', ProductHoldingDailyGs, ProductHoldingDailyGsSerializer, '每日持仓(固收)', 'fof')
 table_registry.register('product_holding_daily_mix', ProductHoldingDailyMix, ProductHoldingDailyMixSerializer, '每日持仓(混合)', 'fof')
+table_registry.register('product_holding_daily', ProductHoldingDaily, ProductHoldingDailySerializer, '每日持仓', 'fof')
+table_registry.register('product_nav', ProductNav, ProductNavSerializer, 'FOF净值1', 'fof')
+table_registry.register('product_nav2', ProductNav2, ProductNav2Serializer, 'FOF净值2', 'fof')

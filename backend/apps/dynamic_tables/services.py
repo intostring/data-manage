@@ -81,7 +81,8 @@ def fetch_rows(meta: TableMeta, limit: int = 20, offset: int = 0,
     - search: 全局模糊搜索（在所有文本列上 LIKE）
     - order_by: 排序字段名（必须是已注册列名或 'id'）
     - order_dir: 'asc' 或 'desc'
-    - filters: 按字段筛选 {col_name: value}，文本列 LIKE，数值列精确匹配
+    - filters: Navicat 风格多操作符筛选 {col_name: {op: value}}
+      支持的操作符: eq, ne, contains, not_contains, gt, lt, gte, lte, empty, not_empty
     """
     cols = meta.get_columns()
     col_names = [quote_ident(c['name']) for c in cols]
@@ -106,19 +107,30 @@ def fetch_rows(meta: TableMeta, limit: int = 20, offset: int = 0,
         if like_clauses:
             where_parts.append('(' + ' OR '.join(like_clauses) + ')')
 
-    # 按字段筛选
+    # 按字段多操作符筛选
     if filters:
         col_map = {c['name']: c for c in cols}
-        for fname, fval in filters.items():
-            if fname not in col_map or fval in (None, ''):
+        for fname, fcond in filters.items():
+            if fname not in col_map or not fcond:
                 continue
-            c = col_map[fname]
-            if c['type'] in ('str', 'text'):
-                where_parts.append(f'{quote_ident(fname)} LIKE %s')
-                params.append(f'%{fval}%')
-            else:
-                where_parts.append(f'{quote_ident(fname)} = %s')
-                params.append(fval)
+            col = col_map[fname]
+            col_ref = quote_ident(fname)
+            # fcond 可以是 {op: value} 或直接 value（兼容旧格式）
+            if isinstance(fcond, dict):
+                for op, val in fcond.items():
+                    clause, param = _build_filter_clause(col_ref, op, val, col['type'])
+                    if clause:
+                        where_parts.append(clause)
+                        if param is not None:
+                            params.append(param)
+            elif fcond not in (None, ''):
+                # 旧格式兼容：文本 LIKE，数值精确
+                if col['type'] in ('str', 'text'):
+                    where_parts.append(f'{col_ref} LIKE %s')
+                    params.append(f'%{fcond}%')
+                else:
+                    where_parts.append(f'{col_ref} = %s')
+                    params.append(fcond)
 
     where = (' WHERE ' + ' AND '.join(where_parts)) if where_parts else ''
 
@@ -137,10 +149,131 @@ def fetch_rows(meta: TableMeta, limit: int = 20, offset: int = 0,
     return rows, total
 
 
+def _build_filter_clause(col_ref, op, val, col_type):
+    """构建单条筛选 SQL 子句，返回 (clause, param)"""
+    if op == 'eq':
+        return f'{col_ref} = %s', val
+    if op == 'ne':
+        return f'{col_ref} != %s', val
+    if op == 'contains':
+        return f'{col_ref} LIKE %s', f'%{val}%'
+    if op == 'not_contains':
+        return f'{col_ref} NOT LIKE %s', f'%{val}%'
+    if op == 'gt':
+        return f'{col_ref} > %s', val
+    if op == 'lt':
+        return f'{col_ref} < %s', val
+    if op == 'gte':
+        return f'{col_ref} >= %s', val
+    if op == 'lte':
+        return f'{col_ref} <= %s', val
+    if op == 'empty':
+        return f'({col_ref} IS NULL OR {col_ref} = \'\')', None
+    if op == 'not_empty':
+        return f'({col_ref} IS NOT NULL AND {col_ref} != \'\')', None
+    return None, None
+
+
 def drop_dynamic_table(meta: TableMeta) -> None:
     with connection.cursor() as cur:
         cur.execute(f'DROP TABLE IF EXISTS `{meta.table_name}`')
     meta.delete()
+
+
+# ==================== Upsert 辅助 ====================
+
+def get_unique_index_columns(meta: TableMeta) -> list:
+    """查询动态表的唯一索引列（非主键）。若无则返回空列表。"""
+    with connection.cursor() as cur:
+        cur.execute(
+            "SELECT INDEX_NAME, COLUMN_NAME FROM information_schema.STATISTICS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s "
+            "AND NON_UNIQUE = 0 AND INDEX_NAME <> 'PRIMARY' "
+            "ORDER BY INDEX_NAME, SEQ_IN_INDEX",
+            [meta.table_name],
+        )
+        rows = cur.fetchall()
+    if not rows:
+        return []
+    # 取第一个唯一索引的列组合
+    first_index = rows[0][0]
+    return [col for idx_name, col in rows if idx_name == first_index]
+
+
+def find_row_id_by_lookup(meta: TableMeta, lookup: dict):
+    """根据 lookup {col: val} 查找匹配行 id，返回 id 或 None。"""
+    if not lookup:
+        return None
+    where_parts = []
+    params = []
+    for col, val in lookup.items():
+        col_ref = quote_ident(col)
+        if val is None or val == '':
+            where_parts.append(f'({col_ref} IS NULL OR {col_ref} = \'\')')
+        else:
+            where_parts.append(f'{col_ref} = %s')
+            params.append(val)
+    sql = f'SELECT `id` FROM `{meta.table_name}` WHERE {" AND ".join(where_parts)} LIMIT 1'
+    with connection.cursor() as cur:
+        cur.execute(sql, params)
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def get_row_values_by_id(meta: TableMeta, row_id: int, col_names: list) -> dict:
+    """根据 id 获取指定列的值，返回 {col: val}。"""
+    if not col_names:
+        return {}
+    col_refs = ', '.join(quote_ident(c) for c in col_names)
+    sql = f'SELECT {col_refs} FROM `{meta.table_name}` WHERE `id` = %s'
+    with connection.cursor() as cur:
+        cur.execute(sql, [row_id])
+        row = cur.fetchone()
+    if row is None:
+        return {}
+    return dict(zip(col_names, row))
+
+
+def update_row_by_id(meta: TableMeta, row_id: int, record: dict) -> None:
+    """根据 id 更新行字段。record: {col: val}（仅包含需要更新的列）。"""
+    if not record:
+        return
+    set_parts = []
+    params = []
+    for col, val in record.items():
+        col_ref = quote_ident(col)
+        if val is None:
+            set_parts.append(f'{col_ref} = NULL')
+        else:
+            set_parts.append(f'{col_ref} = %s')
+            params.append(val)
+    params.append(row_id)
+    sql = f'UPDATE `{meta.table_name}` SET {", ".join(set_parts)} WHERE `id` = %s'
+    with connection.cursor() as cur:
+        cur.execute(sql, params)
+
+
+def insert_single_row(meta: TableMeta, record: dict) -> None:
+    """插入单行数据。record: {col: val}。"""
+    if not record:
+        return
+    cols = list(record.keys())
+    col_refs = ', '.join(quote_ident(c) for c in cols)
+    placeholders = ', '.join(['%s'] * len(cols))
+    params = [record[c] for c in cols]
+    sql = f'INSERT INTO `{meta.table_name}` ({col_refs}) VALUES ({placeholders})'
+    with connection.cursor() as cur:
+        cur.execute(sql, params)
+
+
+def recount_rows(meta: TableMeta) -> int:
+    """重新统计动态表真实行数并回写 meta。"""
+    with connection.cursor() as cur:
+        cur.execute(f'SELECT COUNT(*) FROM `{meta.table_name}`')
+        n = cur.fetchone()[0]
+    meta.row_count = n
+    meta.save(update_fields=['row_count', 'updated_at'])
+    return n
 
 
 def parse_csv(file_obj) -> tuple:

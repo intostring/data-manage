@@ -11,14 +11,6 @@
       </div>
       <div class="flex items-center gap-2">
         <BaseInput v-model="search" placeholder="搜索…" type="text" class="!w-48" />
-        <BaseButton
-          :variant="showFilters ? 'primary' : 'secondary'"
-          size="md"
-          :icon="Filter"
-          @click="showFilters = !showFilters"
-        >
-          筛选
-        </BaseButton>
         <BaseButton variant="secondary" size="md" :icon="RefreshCw" :disabled="loading" @click="fetchData">
           刷新
         </BaseButton>
@@ -68,7 +60,6 @@
         :sort-key="sortKey"
         :sort-order="sortOrder"
         :filter-values="filterValues"
-        :show-filters="showFilters"
         @sort="onSort"
         @filter="onFilter"
         @clear-filter="clearFilter"
@@ -98,6 +89,15 @@
           :type="inputType(col)"
           :placeholder="col.label"
         />
+        <!-- 日期字段使用日期控件 -->
+        <div v-for="col in dateColumns" :key="col.key" class="space-y-1">
+          <label class="block text-sm text-ink-muted">{{ col.label }}</label>
+          <input
+            v-model="form[col.key]"
+            type="date"
+            class="w-full px-3 py-2 border border-line rounded bg-panelLight text-ink focus:border-accent focus:outline-none"
+          />
+        </div>
       </div>
       <template #footer>
         <BaseButton variant="ghost" size="md" @click="formShow = false">取消</BaseButton>
@@ -123,7 +123,7 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { RefreshCw, Plus, Filter, Download, Upload, FileSpreadsheet } from 'lucide-vue-next'
+import { RefreshCw, Plus, Download, Upload, FileSpreadsheet } from 'lucide-vue-next'
 import BaseTable from '../components/ui/BaseTable.vue'
 import BaseButton from '../components/ui/BaseButton.vue'
 import BaseInput from '../components/ui/BaseInput.vue'
@@ -156,10 +156,8 @@ const loading = ref(false)
 const sortKey = ref('')
 const sortOrder = ref('asc')
 
-// 筛选状态：{ colKey: value }
+// 筛选状态：{ colKey: { op, value } }
 const filterValues = ref({})
-// 是否显示列筛选输入框
-const showFilters = ref(true)
 
 // 表单状态
 const formShow = ref(false)
@@ -175,13 +173,24 @@ const deleting = ref(false)
 
 let searchTimer = null
 
-const editableColumns = computed(() => columns.value.filter((c) => c.key !== 'id'))
+const editableColumns = computed(() => columns.value.filter((c) => c.key !== 'id' && c.type !== 'date' && c.type !== 'datetime'))
+const dateColumns = computed(() => columns.value.filter((c) => c.type === 'date' || c.type === 'datetime'))
 
-const hasActiveFilters = computed(() => Object.values(filterValues.value).some((v) => v))
+const OP_LABELS = {
+  eq: '等于', ne: '不等于', contains: '包含', not_contains: '不包含',
+  gt: '大于', lt: '小于', gte: '大于等于', lte: '小于等于',
+  empty: '为空', not_empty: '不为空',
+}
+
+const hasActiveFilters = computed(() => {
+  return Object.values(filterValues.value).some((f) => f && (f.value || f.op === 'empty' || f.op === 'not_empty'))
+})
 const activeFilterDisplay = computed(() => {
   const out = {}
-  for (const [k, v] of Object.entries(filterValues.value)) {
-    if (v) out[k] = v
+  for (const [k, f] of Object.entries(filterValues.value)) {
+    if (f && (f.value || f.op === 'empty' || f.op === 'not_empty')) {
+      out[k] = `${OP_LABELS[f.op] || f.op} ${f.value || ''}`
+    }
   }
   return out
 })
@@ -202,7 +211,7 @@ function inputType(col) {
 // 需要按整数显示的金额类字段（DecimalField 原带小数，这里四舍五入为整数）
 const INTEGER_FIELDS = new Set([
   'cum_investment',    // 总投资金额
-  'mk_bf',             // 初始市值（26年初or26年新投）
+  'mk_bf',             // 初始市值
   'distribution_26',   // 26年分红
   'distribution_bf',   // 历史分红
   'redeem_mv',         // 赎回市值
@@ -212,25 +221,83 @@ const INTEGER_FIELDS = new Set([
 // 需要显示 2 位小数的比率类字段
 const DECIMAL2_FIELDS = new Set([
   'stop_loss_rate',    // 止损线
-  'max_pos_rate',      // 保证金最大使用比例
+  'max_pos_rate',      // 最大保证金比例
   'perf_fee',          // 业绩报酬比例
+  'share_chg',         // 份额变动
 ])
 
+// 需要显示 4 位小数的字段（如基金净值）
+const DECIMAL4_FIELDS = new Set([
+  'unit_nav',          // 单位净值
+  'accum_nav',         // 累计净值
+  'adjust_nav',        // 复权净值
+  'price',             // 变动价格
+])
+
+// 各表自定义可见字段与顺序（按字段 name 指定，只显示列出的字段并按此顺序排列）
+// 未配置的表默认显示全部字段
+const TABLE_FIELD_CONFIG = {
+  account_record: [
+    'account_id',          // 投顾ID
+    'account_name',        // 投顾名称
+    'product_name',        // 所属产品
+    'create_time',         // 创建时间
+    'status',              // 状态
+    'cum_investment',      // 总投资金额
+    'stop_loss_rate',      // 止损线
+    'max_pos_rate',        // 最大保证金比例
+    'mk_bf',               // 初始市值
+    'is_hold',             // 是否还在持仓
+    'account_tag',         // 投顾的类型
+    'perf_fee',            // 业绩报酬比例
+    'distribution_26',     // 26年分红
+    'distribution_bf',     // 历史分红
+    'redeem_mv',           // 赎回市值
+    'new_add',             // 当日新增规模
+    'tips',                // 说明
+    'invest_cate',         // 投顾类型
+  ],
+}
+
 // 将后端字段元信息 [{name, label, type}] 转为 BaseTable 所需的 columns 配置
-function buildColumns(colsMeta) {
+function buildColumns(colsMeta, tableKey) {
   if (!colsMeta || !colsMeta.length) return []
-  return colsMeta.map((c) => {
+  // 如果该表配置了可见字段，按配置顺序过滤
+  const fieldOrder = TABLE_FIELD_CONFIG[tableKey]
+  let meta = colsMeta
+  if (fieldOrder) {
+    const metaMap = new Map(colsMeta.map((c) => [c.name, c]))
+    meta = fieldOrder.map((name) => metaMap.get(name)).filter(Boolean)
+  }
+  return meta.map((c) => {
     const isNumeric = c.type === 'int' || c.type === 'float'
+    // 长文本字段（如 raw_json）或指定字段（如 tips）截断显示，点击弹窗查看详情
+    const EXPANDABLE_STR_FIELDS = new Set(['tips'])
+    // 实际是日期但存为 CharField 的字段，统一视为日期类型
+    const DATE_STR_FIELDS = new Set([
+      'create_time',       // 账户记录-创建时间
+      'create_date',       // 投顾信息-创建日期
+      'trading_day',       // 交易日期
+      'crawl_time',        // 爬取时间
+      'last_edit_date',    // 最后编辑日期
+      'start_date',        // 成立日期
+      'open_date',         // 开仓日期
+    ])
+    let colType = c.type
+    if (DATE_STR_FIELDS.has(c.name)) colType = 'date'
     return {
       key: c.name,
       label: c.label || c.name,
-      type: c.type,
+      type: colType,
       sortable: true,
       filterable: true,
       mono: isNumeric,
-      format: INTEGER_FIELDS.has(c.name) ? 'integer' : (DECIMAL2_FIELDS.has(c.name) ? 'decimal2' : undefined),
-      // 长文本字段（如 raw_json）截断显示，点击弹窗查看详情
-      expandable: c.type === 'text',
+      format: INTEGER_FIELDS.has(c.name)
+        ? 'integer'
+        : (DECIMAL2_FIELDS.has(c.name)
+          ? 'decimal2'
+          : (DECIMAL4_FIELDS.has(c.name) ? 'decimal4' : undefined)),
+      expandable: c.type === 'text' || EXPANDABLE_STR_FIELDS.has(c.name),
     }
   })
 }
@@ -240,7 +307,7 @@ async function fetchColumns() {
     if (kind.value === 'existing') {
       const { data } = await client.get(`/tables/${tableKey.value}/columns/`)
       tableLabel.value = data.label
-      columns.value = buildColumns(data.columns)
+      columns.value = buildColumns(data.columns, tableKey.value)
     } else {
       // 动态表：先请求数据接口获取 columns（label=name，CSV 表头由用户定义）
       const { data } = await client.get(`/dynamic/${tableKey.value}/`, {
@@ -249,7 +316,7 @@ async function fetchColumns() {
       tableLabel.value = ''
       // 动态表 columns 已带 name/type，补 label=name
       const cols = (data.columns || []).map((c) => ({ ...c, label: c.label || c.name }))
-      columns.value = buildColumns(cols)
+      columns.value = buildColumns(cols, tableKey.value)
     }
   } catch (e) {
     toast.error(e.response?.data?.detail || '获取字段信息失败')
@@ -263,10 +330,15 @@ async function fetchData() {
       ? (sortOrder.value === 'desc' ? `-${sortKey.value}` : sortKey.value)
       : undefined
 
-    // 清理筛选参数（去除空值）
-    const activeFilters = {}
-    for (const [k, v] of Object.entries(filterValues.value)) {
-      if (v) activeFilters[k] = v
+    // 构建筛选参数：filter.<col>.<op>=value
+    const filterParams = {}
+    for (const [k, f] of Object.entries(filterValues.value)) {
+      if (!f) continue
+      if (f.op === 'empty' || f.op === 'not_empty') {
+        filterParams[`filter.${k}.${f.op}`] = '1'
+      } else if (f.value) {
+        filterParams[`filter.${k}.${f.op}`] = f.value
+      }
     }
 
     if (kind.value === 'existing') {
@@ -276,25 +348,20 @@ async function fetchData() {
           page_size: pageSize.value,
           search: search.value || undefined,
           ordering,
-          ...activeFilters,
+          ...filterParams,
         },
       })
       const list = data.results || data
       rows.value = list
       total.value = data.count ?? list.length
     } else {
-      // 动态表筛选用 filter.<col> 前缀
-      const dynFilters = {}
-      for (const [k, v] of Object.entries(activeFilters)) {
-        dynFilters[`filter.${k}`] = v
-      }
       const { data } = await client.get(`/dynamic/${tableKey.value}/`, {
         params: {
           page: page.value,
           page_size: pageSize.value,
           search: search.value || undefined,
           ordering,
-          ...dynFilters,
+          ...filterParams,
         },
       })
       rows.value = data.results || []
@@ -333,7 +400,9 @@ function onFilter({ key, value }) {
 }
 
 function clearFilter(key) {
-  filterValues.value = { ...filterValues.value, [key]: '' }
+  const next = { ...filterValues.value }
+  delete next[key]
+  filterValues.value = next
   page.value = 1
   fetchData()
 }
@@ -360,7 +429,6 @@ watch(tableKey, () => {
   sortKey.value = ''
   sortOrder.value = 'asc'
   filterValues.value = {}
-  showFilters.value = true
   fetchColumns().then(() => fetchData())
 })
 
@@ -437,7 +505,6 @@ onMounted(async () => {
 // ==================== 导入 / 导出 ====================
 
 function buildExportParams() {
-  // 与列表请求一致的筛选参数
   const params = {}
   if (search.value) params.search = search.value
   const ordering = sortKey.value
@@ -445,15 +512,12 @@ function buildExportParams() {
     : undefined
   if (ordering) params.ordering = ordering
 
-  const activeFilters = {}
-  for (const [k, v] of Object.entries(filterValues.value)) {
-    if (v) activeFilters[k] = v
-  }
-  if (kind.value === 'existing') {
-    Object.assign(params, activeFilters)
-  } else {
-    for (const [k, v] of Object.entries(activeFilters)) {
-      params[`filter.${k}`] = v
+  for (const [k, f] of Object.entries(filterValues.value)) {
+    if (!f) continue
+    if (f.op === 'empty' || f.op === 'not_empty') {
+      params[`filter.${k}.${f.op}`] = '1'
+    } else if (f.value) {
+      params[`filter.${k}.${f.op}`] = f.value
     }
   }
   return params
@@ -516,12 +580,21 @@ async function onImportFileChange(e) {
       headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 120000,
     })
-    const ok = data.imported ?? 0
     const errs = data.errors || []
+    const created = data.created ?? 0
+    const updated = data.updated ?? 0
+    const skipped = data.skipped ?? 0
+    const imported = data.imported ?? 0
+    const parts = []
+    if (created) parts.push(`新增 ${created}`)
+    if (updated) parts.push(`更新 ${updated}`)
+    if (skipped) parts.push(`跳过 ${skipped}`)
+    if (imported) parts.push(`导入 ${imported}`)
+    const summary = parts.join('，') || '无变化'
     if (errs.length) {
-      toast.warning(`已导入 ${ok} 行，${errs.length} 行有错误`)
+      toast.warning(`${summary}，${errs.length} 行有错误`)
     } else {
-      toast.success(`成功导入 ${ok} 行`)
+      toast.success(summary)
     }
     fetchData()
   } catch (err) {
