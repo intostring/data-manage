@@ -1,12 +1,17 @@
 <template>
-  <div class="overflow-x-auto">
-    <table class="w-full text-sm">
+  <div class="overflow-auto max-h-[70vh]">
+    <table class="w-full text-sm border-collapse">
       <thead>
         <tr class="bg-canvasDark border-b border-line">
           <th
-            v-for="col in columns"
+            v-for="(col, idx) in columns"
             :key="col.key"
-            class="text-left font-semibold text-ink-muted px-3 py-2.5 whitespace-nowrap select-none align-top border-b border-line"
+            class="text-left font-semibold text-ink-muted px-3 py-2.5 whitespace-nowrap select-none align-top border-b border-line sticky top-0 bg-canvasDark"
+            :class="[
+              isFrozen(idx) ? 'z-30' : 'z-20',
+              isFrozen(idx) && idx === frozenCount - 1 ? 'shadow-[2px_0_4px_-2px_rgba(0,0,0,0.15)]' : '',
+            ]"
+            :style="isFrozen(idx) ? { left: getFrozenOffset(idx) } : {}"
           >
             <div
               :class="col.sortable ? 'cursor-pointer hover:text-ink inline-flex items-center gap-1' : 'inline-flex items-center gap-1'"
@@ -37,7 +42,7 @@
               >×</button>
             </div>
           </th>
-          <th v-if="$slots.actions" class="text-right font-semibold text-ink-muted px-3 py-2.5 border-b border-line">
+          <th v-if="$slots.actions" class="text-right font-semibold text-ink-muted px-3 py-2.5 border-b border-line sticky top-0 bg-canvasDark z-20">
             操作
           </th>
         </tr>
@@ -50,10 +55,15 @@
           :class="idx % 2 === 1 ? 'bg-canvas/40 hover:bg-canvasDark' : 'bg-panel hover:bg-canvasDark'"
         >
           <td
-            v-for="col in columns"
+            v-for="(col, cIdx) in columns"
             :key="col.key"
             class="px-3 py-2 text-ink"
-            :class="col.mono ? 'font-mono text-xs' : ''"
+            :class="[
+              col.mono ? 'font-mono text-xs' : '',
+              isFrozen(cIdx) ? 'sticky z-10 ' + (idx % 2 === 1 ? 'bg-canvas' : 'bg-panel') : '',
+              isFrozen(cIdx) && cIdx === frozenCount - 1 ? 'shadow-[2px_0_4px_-2px_rgba(0,0,0,0.15)]' : '',
+            ]"
+            :style="isFrozen(cIdx) ? { left: getFrozenOffset(cIdx) } : {}"
           >
             <span
               v-if="col.expandable && hasExpandableContent(row[col.key])"
@@ -105,8 +115,28 @@ const props = defineProps({
   filterValues: { type: Object, default: () => ({}) },
   // 是否显示筛选输入框（由父组件控制）
   showFilters: { type: Boolean, default: true },
+  // 冻结前 N 列（水平滚动时保持可见），默认冻结第 1 列
+  frozenCount: { type: Number, default: 1 },
 })
 const emit = defineEmits(['sort', 'filter', 'clear-filter'])
+
+// 判断指定列索引是否被冻结
+function isFrozen(idx) {
+  return idx < props.frozenCount
+}
+
+// 计算冻结列的 left 偏移量（需与实际列宽匹配）
+// 由于列宽不固定，这里用估算值：每列约 120px
+const frozenOffsets = []
+function getFrozenOffset(idx) {
+  if (frozenOffsets[idx] !== undefined) return frozenOffsets[idx] + 'px'
+  let offset = 0
+  for (let i = 0; i < idx; i++) {
+    offset += 120
+  }
+  frozenOffsets[idx] = offset
+  return offset + 'px'
+}
 
 function toggleSort(key) {
   // 通知父组件切换排序，由父组件决定新状态并传回 sortKey/sortOrder
