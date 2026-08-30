@@ -1,164 +1,143 @@
 from rest_framework import serializers
 
 from .models import (
-    AccountRecord,
-    AdviserInfo,
-    AdviserProduct,
-    AdviserProductApi,
-    AdviserProductHeader,
-    AdviserTradingFund,
-    AdviserTradingOrder,
-    AdviserTradingPosition,
-    AdviserTradingTrade,
-    FundCodesLh,
-    FundNetValue,
-    FundNetValueHypo,
-    FundShareChg,
-    ProductFundInfo,
-    ProductHoldingDaily,
-    ProductHoldingDailyGs,
-    ProductHoldingDailyMix,
-    ProductNav,
-    ProductNav2,
+    FutMarketData,
+    FutMarketStats,
+    FutSectorIndex,
+    FutSymbolInfo,
+    MomAccountRecord,
+    MomProductInfo,
+    OptMarketData,
+    OptRiskStats,
+    PerfProducts,
+    PerfRiskIndicators,
+    QuotesDynamic,
+    QuotesStatic,
+    RhAdvisors,
+    RhFunds,
+    RhOrders,
+    RhPositions,
+    RhTrades,
 )
 from .registry import table_registry
 
 
-class AccountRecordSerializer(serializers.ModelSerializer):
+class MomAccountRecordSerializer(serializers.ModelSerializer):
     class Meta:
-        model = AccountRecord
+        model = MomAccountRecord
         fields = '__all__'
 
 
-class AdviserInfoSerializer(serializers.ModelSerializer):
+class MomProductInfoSerializer(serializers.ModelSerializer):
     class Meta:
-        model = AdviserInfo
+        model = MomProductInfo
         fields = '__all__'
 
 
-class AdviserProductSerializer(serializers.ModelSerializer):
+class PerfProductsSerializer(serializers.ModelSerializer):
     class Meta:
-        model = AdviserProduct
+        model = PerfProducts
         fields = '__all__'
 
 
-class AdviserProductApiSerializer(serializers.ModelSerializer):
+class PerfRiskIndicatorsSerializer(serializers.ModelSerializer):
     class Meta:
-        model = AdviserProductApi
+        model = PerfRiskIndicators
         fields = '__all__'
 
 
-class AdviserProductHeaderSerializer(serializers.ModelSerializer):
+class QuotesDynamicSerializer(serializers.ModelSerializer):
     class Meta:
-        model = AdviserProductHeader
+        model = QuotesDynamic
         fields = '__all__'
 
 
-class AdviserTradingFundSerializer(serializers.ModelSerializer):
+class QuotesStaticSerializer(serializers.ModelSerializer):
     class Meta:
-        model = AdviserTradingFund
+        model = QuotesStatic
         fields = '__all__'
 
 
-class AdviserTradingOrderSerializer(serializers.ModelSerializer):
+class RhAdvisorsSerializer(serializers.ModelSerializer):
     class Meta:
-        model = AdviserTradingOrder
+        model = RhAdvisors
         fields = '__all__'
 
 
-class AdviserTradingPositionSerializer(serializers.ModelSerializer):
+class RhFundsSerializer(serializers.ModelSerializer):
     class Meta:
-        model = AdviserTradingPosition
+        model = RhFunds
         fields = '__all__'
 
 
-class AdviserTradingTradeSerializer(serializers.ModelSerializer):
+class RhOrdersSerializer(serializers.ModelSerializer):
     class Meta:
-        model = AdviserTradingTrade
+        model = RhOrders
         fields = '__all__'
 
 
-# ---- FOF 数据表 Serializer ----
-
-class FundCodesLhSerializer(serializers.ModelSerializer):
+class RhPositionsSerializer(serializers.ModelSerializer):
     class Meta:
-        model = FundCodesLh
+        model = RhPositions
         fields = '__all__'
 
 
-class FundNetValueSerializer(serializers.ModelSerializer):
+class RhTradesSerializer(serializers.ModelSerializer):
     class Meta:
-        model = FundNetValue
+        model = RhTrades
         fields = '__all__'
 
 
-class FundNetValueHypoSerializer(serializers.ModelSerializer):
+class FutSymbolInfoSerializer(serializers.ModelSerializer):
     class Meta:
-        model = FundNetValueHypo
+        model = FutSymbolInfo
         fields = '__all__'
 
 
-class FundShareChgSerializer(serializers.ModelSerializer):
+class FutSectorIndexSerializer(serializers.ModelSerializer):
     class Meta:
-        model = FundShareChg
+        model = FutSectorIndex
         fields = '__all__'
 
 
-class ProductFundInfoSerializer(serializers.ModelSerializer):
+class FutMarketDataSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ProductFundInfo
+        model = FutMarketData
         fields = '__all__'
 
 
-class ProductHoldingDailyGsSerializer(serializers.ModelSerializer):
+class FutMarketStatsSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ProductHoldingDailyGs
+        model = FutMarketStats
         fields = '__all__'
 
 
-class ProductHoldingDailyMixSerializer(serializers.ModelSerializer):
+class OptRiskStatsSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ProductHoldingDailyMix
+        model = OptRiskStats
         fields = '__all__'
 
 
-class ProductHoldingDailySerializer(serializers.ModelSerializer):
+class OptMarketDataSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ProductHoldingDaily
+        model = OptMarketData
         fields = '__all__'
 
 
-class ProductNavSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = ProductNav
-        fields = '__all__'
-
-
-class ProductNav2Serializer(serializers.ModelSerializer):
-    class Meta:
-        model = ProductNav2
-        fields = '__all__'
-
-
-# 注册全部已有表：URL 标识 / Model / Serializer / 显示名 / 分组
-# MOM 数据
-table_registry.register('account_record', AccountRecord, AccountRecordSerializer, '账户记录', 'mom')
-table_registry.register('adviser_info', AdviserInfo, AdviserInfoSerializer, '投顾信息', 'mom')
-table_registry.register('adviser_product', AdviserProduct, AdviserProductSerializer, '投顾产品', 'mom')
-table_registry.register('adviser_product_api', AdviserProductApi, AdviserProductApiSerializer, '产品API', 'mom')
-table_registry.register('adviser_product_header', AdviserProductHeader, AdviserProductHeaderSerializer, '产品详情', 'mom')
-table_registry.register('adviser_trading_fund', AdviserTradingFund, AdviserTradingFundSerializer, '资金数据', 'mom')
-table_registry.register('adviser_trading_order', AdviserTradingOrder, AdviserTradingOrderSerializer, '委托数据', 'mom')
-table_registry.register('adviser_trading_position', AdviserTradingPosition, AdviserTradingPositionSerializer, '持仓数据', 'mom')
-table_registry.register('adviser_trading_trade', AdviserTradingTrade, AdviserTradingTradeSerializer, '成交数据', 'mom')
-# FOF 数据
-table_registry.register('fund_codes_lh', FundCodesLh, FundCodesLhSerializer, '基金代码', 'fof')
-table_registry.register('fund_net_value', FundNetValue, FundNetValueSerializer, '基金净值', 'fof')
-table_registry.register('fund_net_value_hypo', FundNetValueHypo, FundNetValueHypoSerializer, '虚拟净值', 'fof')
-table_registry.register('fund_share_chg', FundShareChg, FundShareChgSerializer, '基金申赎', 'fof')
-table_registry.register('product_fund_info', ProductFundInfo, ProductFundInfoSerializer, '持仓基金', 'fof')
-table_registry.register('product_holding_daily_gs', ProductHoldingDailyGs, ProductHoldingDailyGsSerializer, '每日持仓(固收)', 'fof')
-table_registry.register('product_holding_daily_mix', ProductHoldingDailyMix, ProductHoldingDailyMixSerializer, '每日持仓(混合)', 'fof')
-table_registry.register('product_holding_daily', ProductHoldingDaily, ProductHoldingDailySerializer, '每日持仓', 'fof')
-table_registry.register('product_nav', ProductNav, ProductNavSerializer, 'FOF净值1', 'fof')
-table_registry.register('product_nav2', ProductNav2, ProductNav2Serializer, 'FOF净值2', 'fof')
+table_registry.register('mom_account_record', MomAccountRecord, MomAccountRecordSerializer, 'MOM账户记录', 'mom')
+table_registry.register('mom_product_info', MomProductInfo, MomProductInfoSerializer, 'MOM产品信息', 'mom')
+table_registry.register('perf_products', PerfProducts, PerfProductsSerializer, '绩效产品', 'performance')
+table_registry.register('perf_risk_indicators', PerfRiskIndicators, PerfRiskIndicatorsSerializer, '风险指标', 'performance')
+table_registry.register('quotes_dynamic', QuotesDynamic, QuotesDynamicSerializer, '动态语录', 'quotes')
+table_registry.register('quotes_static', QuotesStatic, QuotesStaticSerializer, '静态语录', 'quotes')
+table_registry.register('rh_advisors', RhAdvisors, RhAdvisorsSerializer, '投顾账户', 'rh')
+table_registry.register('rh_funds', RhFunds, RhFundsSerializer, '权益信息', 'rh')
+table_registry.register('rh_orders', RhOrders, RhOrdersSerializer, '委托信息', 'rh')
+table_registry.register('rh_positions', RhPositions, RhPositionsSerializer, '持仓信息', 'rh')
+table_registry.register('rh_trades', RhTrades, RhTradesSerializer, '成交信息', 'rh')
+table_registry.register('fut_symbol_info', FutSymbolInfo, FutSymbolInfoSerializer, '期货品种信息', 'futures')
+table_registry.register('fut_sector_index', FutSectorIndex, FutSectorIndexSerializer, '期货板块指数', 'futures')
+table_registry.register('fut_market_data', FutMarketData, FutMarketDataSerializer, '期货行情数据', 'futures')
+table_registry.register('fut_market_stats', FutMarketStats, FutMarketStatsSerializer, '期货市场统计', 'futures')
+table_registry.register('opt_risk_stats', OptRiskStats, OptRiskStatsSerializer, '期权风险指标', 'options')
+table_registry.register('opt_market_data', OptMarketData, OptMarketDataSerializer, '期权行情数据', 'options')

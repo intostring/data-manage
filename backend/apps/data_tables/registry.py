@@ -61,6 +61,7 @@ class TableEntry:
                 'name': f.name,
                 'label': str(label),
                 'type': _field_type(f),
+                'primary_key': f.primary_key,
             })
         return cols
 

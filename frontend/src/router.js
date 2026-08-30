@@ -16,6 +16,7 @@ const routes = [
       { path: 'table/existing/:key', name: 'existing-table', component: () => import('./views/TableView.vue') },
       { path: 'table/dynamic/:key', name: 'dynamic-table', component: () => import('./views/TableView.vue') },
       { path: 'upload', name: 'upload', component: () => import('./views/UploadTable.vue') },
+      { path: 'system/users', name: 'system-users', component: () => import('./views/SystemUsers.vue') },
     ],
   },
 ]

@@ -81,14 +81,25 @@
     <!-- 新增/编辑模态框 -->
     <BaseModal :show="formShow" :title="formMode === 'create' ? '新增记录' : '编辑记录'" @close="formShow = false">
       <div class="space-y-4">
-        <BaseInput
-          v-for="col in editableColumns"
-          :key="col.key"
-          v-model="form[col.key]"
-          :label="col.label"
-          :type="inputType(col)"
-          :placeholder="col.label"
-        />
+        <div v-for="col in editableColumns" :key="col.key" class="space-y-1">
+          <label v-if="col.options" class="block text-sm text-ink-muted">{{ col.label }}</label>
+          <select
+            v-if="col.options"
+            v-model="form[col.key]"
+            class="w-full px-3 py-2 border border-line rounded bg-panelLight text-ink focus:border-accent focus:outline-none"
+          >
+            <option v-for="opt in col.options" :key="opt.value" :value="opt.value">
+              {{ opt.label }}
+            </option>
+          </select>
+          <BaseInput
+            v-else
+            v-model="form[col.key]"
+            :label="col.label"
+            :type="inputType(col)"
+            :placeholder="col.label"
+          />
+        </div>
         <!-- 日期字段使用日期控件 -->
         <div v-for="col in dateColumns" :key="col.key" class="space-y-1">
           <label class="block text-sm text-ink-muted">{{ col.label }}</label>
@@ -175,6 +186,7 @@ let searchTimer = null
 
 const editableColumns = computed(() => columns.value.filter((c) => c.key !== 'id' && c.type !== 'date' && c.type !== 'datetime'))
 const dateColumns = computed(() => columns.value.filter((c) => c.type === 'date' || c.type === 'datetime'))
+const primaryKey = computed(() => columns.value.find((c) => c.primary_key)?.key || 'id')
 
 const OP_LABELS = {
   eq: '等于', ne: '不等于', contains: '包含', not_contains: '不包含',
@@ -237,7 +249,7 @@ const DECIMAL4_FIELDS = new Set([
 // 各表自定义可见字段与顺序（按字段 name 指定，只显示列出的字段并按此顺序排列）
 // 未配置的表默认显示全部字段
 const TABLE_FIELD_CONFIG = {
-  account_record: [
+  mom_account_record: [
     'account_id',          // 投顾ID
     'account_name',        // 投顾名称
     'product_name',        // 所属产品
@@ -247,7 +259,7 @@ const TABLE_FIELD_CONFIG = {
     'stop_loss_rate',      // 止损线
     'max_pos_rate',        // 最大保证金比例
     'mk_bf',               // 初始市值
-    'is_hold',             // 是否还在持仓
+    'is_stop',             // 是否停止
     'account_tag',         // 投顾的类型
     'perf_fee',            // 业绩报酬比例
     'distribution_26',     // 26年分红
@@ -256,6 +268,7 @@ const TABLE_FIELD_CONFIG = {
     'new_add',             // 当日新增规模
     'tips',                // 说明
     'invest_cate',         // 投顾类型
+    'invest_logic',        // 投资逻辑
   ],
 }
 
@@ -270,9 +283,12 @@ function buildColumns(colsMeta, tableKey) {
     meta = fieldOrder.map((name) => metaMap.get(name)).filter(Boolean)
   }
   return meta.map((c) => {
+    const labelParts = tableKey === 'perf_risk_indicators'
+      ? { label: c.label || c.name, hint: '' }
+      : splitLabelHint(c.label || c.name)
     const isNumeric = c.type === 'int' || c.type === 'float'
     // 长文本字段（如 raw_json）或指定字段（如 tips）截断显示，点击弹窗查看详情
-    const EXPANDABLE_STR_FIELDS = new Set(['tips'])
+    const EXPANDABLE_STR_FIELDS = new Set(['tips', 'raw_json'])
     // 实际是日期但存为 CharField 的字段，统一视为日期类型
     const DATE_STR_FIELDS = new Set([
       'create_time',       // 账户记录-创建时间
@@ -285,21 +301,75 @@ function buildColumns(colsMeta, tableKey) {
     ])
     let colType = c.type
     if (DATE_STR_FIELDS.has(c.name)) colType = 'date'
+    const isMomStopField = tableKey === 'mom_account_record' && c.name === 'is_stop'
+    const isMomAccountTagField = tableKey === 'mom_account_record' && c.name === 'account_tag'
+    const isRiskPercentField = tableKey === 'perf_risk_indicators'
+      && (
+        c.name.startsWith('annual_yield_')
+        || c.name.startsWith('annual_volatility_')
+        || c.name.startsWith('max_drawdown_')
+      )
     return {
       key: c.name,
-      label: c.label || c.name,
+      label: labelParts.label,
+      labelTitle: labelParts.hint,
       type: colType,
       sortable: true,
       filterable: true,
       mono: isNumeric,
+      width: c.name === 'raw_json' ? '96px' : undefined,
+      previewWidth: c.name === 'raw_json' ? '72px' : undefined,
+      valueMap: isMomStopField
+        ? { 0: '启用', 1: '停止' }
+        : (isMomAccountTagField
+          ? { 1: '外部投顾', 2: '内部投顾', 3: '外部代持', 4: '内部持仓' }
+          : undefined),
+      options: isMomStopField
+        ? [
+          { label: '启用', value: 0 },
+          { label: '停止', value: 1 },
+        ]
+        : (isMomAccountTagField
+          ? [
+            { label: '外部投顾', value: 1 },
+            { label: '内部投顾', value: 2 },
+            { label: '外部代持', value: 3 },
+            { label: '内部持仓', value: 4 },
+          ]
+          : undefined),
       format: INTEGER_FIELDS.has(c.name)
         ? 'integer'
-        : (DECIMAL2_FIELDS.has(c.name)
+        : (isRiskPercentField
+          ? 'percent1'
+          : (['max_pos_rate', 'perf_fee'].includes(c.name)
+          ? 'percent2'
+          : (DECIMAL2_FIELDS.has(c.name)
           ? 'decimal2'
-          : (DECIMAL4_FIELDS.has(c.name) ? 'decimal4' : undefined)),
+          : (DECIMAL4_FIELDS.has(c.name) ? 'decimal4' : undefined)))),
       expandable: c.type === 'text' || EXPANDABLE_STR_FIELDS.has(c.name),
+      truncate: c.name === 'raw_json',
     }
   })
+}
+
+function splitLabelHint(label) {
+  const fullMatch = String(label).match(/^(.+?)[（(]([^）)]*)[）)]$/)
+  if (fullMatch) {
+    return {
+      label: fullMatch[1].trim(),
+      hint: fullMatch[2].trim(),
+    }
+  }
+
+  const openIndex = Math.max(String(label).lastIndexOf('（'), String(label).lastIndexOf('('))
+  if (openIndex > 0) {
+    return {
+      label: String(label).slice(0, openIndex).trim(),
+      hint: String(label).slice(openIndex + 1).trim(),
+    }
+  }
+
+  return { label, hint: '' }
 }
 
 async function fetchColumns() {
@@ -435,7 +505,7 @@ watch(tableKey, () => {
 function openCreate() {
   formMode.value = 'create'
   form.value = {}
-  editableColumns.value.forEach((c) => (form.value[c.key] = ''))
+  editableColumns.value.forEach((c) => (form.value[c.key] = c.options ? c.options[0].value : ''))
   editingId.value = null
   formShow.value = true
 }
@@ -443,7 +513,7 @@ function openCreate() {
 function openEdit(row) {
   formMode.value = 'edit'
   form.value = { ...row }
-  editingId.value = row.id
+  editingId.value = row[primaryKey.value]
   formShow.value = true
 }
 
@@ -456,7 +526,7 @@ async function saveRecord() {
       if (formMode.value === 'create') {
         await client.post(`/tables/${tableKey.value}/`, payload)
       } else {
-        await client.patch(`/tables/${tableKey.value}/${editingId.value}/`, payload)
+        await client.patch(`/tables/${tableKey.value}/${encodeURIComponent(editingId.value)}/`, payload)
       }
     } else {
       toast.info('动态表请通过重新上传 CSV 修改数据')
@@ -483,7 +553,7 @@ async function doDelete() {
   deleting.value = true
   try {
     if (kind.value === 'existing') {
-      await client.delete(`/tables/${tableKey.value}/${deletingRow.value.id}/`)
+      await client.delete(`/tables/${tableKey.value}/${encodeURIComponent(deletingRow.value[primaryKey.value])}/`)
       toast.success('已删除')
     } else {
       toast.info('动态表暂不支持单行删除')

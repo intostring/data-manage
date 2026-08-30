@@ -62,6 +62,7 @@ const menuRef = ref(null)
 const currentTitle = computed(() => {
   if (route.name === 'dashboard') return '概览'
   if (route.name === 'upload') return '上传数据'
+  if (route.name === 'system-users') return '系统管理'
   if (route.params.key) return route.params.key
   return '数据管理平台'
 })

@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import Q
 from django.http import HttpResponse
 from rest_framework import viewsets
 from rest_framework.decorators import api_view, permission_classes
@@ -72,6 +73,14 @@ class DynamicModelViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = self.model.objects.all()
+        search = self.request.query_params.get('search', '').strip()
+        if search:
+            query = Q()
+            for field in self.model._meta.fields:
+                if isinstance(field, (models.CharField, models.TextField)):
+                    query |= Q(**{f'{field.name}__icontains': search})
+            if query:
+                qs = qs.filter(query)
         qs = _apply_advanced_filters(qs, self.request, self.model)
         return qs
 
@@ -133,7 +142,6 @@ def _apply_filters(qs, request, entry):
     # search：在所有 CharField / TextField 上 icontains
     search = request.query_params.get('search', '').strip()
     if search:
-        from django.db.models import Q
         q = Q()
         for f in entry.model._meta.fields:
             if isinstance(f, (models.CharField, models.TextField)):

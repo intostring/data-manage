@@ -23,6 +23,15 @@
           <Upload :size="15" :stroke-width="1.75" />
           上传数据
         </router-link>
+        <router-link
+          v-if="auth.user?.is_superuser"
+          to="/system/users"
+          class="flex items-center gap-2 px-2.5 py-1.5 rounded text-sm transition-colors"
+          :class="isActive('system-users') ? 'bg-sidebar-active text-white font-medium' : 'text-sidebar-text hover:bg-sidebar-hover hover:text-white'"
+        >
+          <Settings :size="15" :stroke-width="1.75" />
+          系统管理
+        </router-link>
       </div>
 
       <!-- MOM 数据 -->
@@ -50,20 +59,19 @@
         </div>
       </div>
 
-      <!-- FOF 数据 -->
-      <div class="px-2 mt-3">
+      <div v-for="section in sections" :key="section.key" class="px-2 mt-3">
         <button
           class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-sm transition-colors text-sidebar-text hover:bg-sidebar-hover hover:text-white"
-          @click="fofOpen = !fofOpen"
+          @click="toggleSection(section.key)"
         >
-          <ChevronDown v-if="fofOpen" :size="14" :stroke-width="2" class="text-sidebar-muted" />
+          <ChevronDown v-if="section.open" :size="14" :stroke-width="2" class="text-sidebar-muted" />
           <ChevronRight v-else :size="14" :stroke-width="2" class="text-sidebar-muted" />
-          <span class="font-medium">FOF数据</span>
-          <span class="ml-auto text-xs text-sidebar-muted">{{ tables.fofTables.length }}</span>
+          <span class="font-medium">{{ section.label }}</span>
+          <span class="ml-auto text-xs text-sidebar-muted">{{ section.tables.length }}</span>
         </button>
-        <div v-show="fofOpen" class="mt-0.5 space-y-0.5">
+        <div v-show="section.open" class="mt-0.5 space-y-0.5">
           <router-link
-            v-for="t in tables.fofTables"
+            v-for="t in section.tables"
             :key="t.key"
             :to="`/table/existing/${t.key}`"
             class="flex items-center gap-2 pl-8 pr-2.5 py-1 rounded text-sm transition-colors"
@@ -101,17 +109,33 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { LayoutDashboard, Upload, Table2, ChevronDown, ChevronRight } from 'lucide-vue-next'
+import { LayoutDashboard, Settings, Upload, Table2, ChevronDown, ChevronRight } from 'lucide-vue-next'
+import { useAuthStore } from '../../stores/auth'
 import { useTablesStore } from '../../stores/tables'
 
 const route = useRoute()
+const auth = useAuthStore()
 const tables = useTablesStore()
 
 // 分组展开状态：默认展开，命中其中某张表时自动展开
 const momOpen = ref(true)
+const futuresOpen = ref(true)
+const optionsOpen = ref(true)
 const fofOpen = ref(true)
+
+const sections = computed(() => [
+  { key: 'futures', label: '期货数据', open: futuresOpen.value, tables: tables.futuresTables },
+  { key: 'options', label: '期权数据', open: optionsOpen.value, tables: tables.optionsTables },
+  { key: 'fof', label: 'FOF数据', open: fofOpen.value, tables: tables.fofTables },
+])
+
+function toggleSection(key) {
+  if (key === 'futures') futuresOpen.value = !futuresOpen.value
+  if (key === 'options') optionsOpen.value = !optionsOpen.value
+  if (key === 'fof') fofOpen.value = !fofOpen.value
+}
 
 watch(
   () => route.path,
@@ -122,6 +146,8 @@ watch(
       const t = tables.existingTables.find((e) => e.key === key)
       if (t) {
         if (t.group === 'fof') fofOpen.value = true
+        else if (t.group === 'futures') futuresOpen.value = true
+        else if (t.group === 'options') optionsOpen.value = true
         else momOpen.value = true
       }
     }

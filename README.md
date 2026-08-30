@@ -44,6 +44,12 @@ pip install -r requirements.txt
 cp .env.example .env
 # 编辑 .env 填入阿里云 MySQL 连接信息
 
+# 如果还不确定 DB_NAME，可先列出当前账号可见数据库
+python manage.py inspect_rds --show-databases
+
+# 填好 DB_NAME 后，检查 RDS 表和本地注册表是否匹配
+python manage.py inspect_rds
+
 # 接入已有 MySQL 表（反向生成模型）
 python manage.py inspectdb > apps/data_tables/models.py
 # 编辑生成的 models.py，保留需要管理的表

@@ -14,9 +14,11 @@ for entry in table_registry.all():
             pass
         _VS.model = model
         _VS.serializer_class = serializer
-        # 表无 id 字段时，使用模型 Meta.ordering 作为默认排序，避免按 id 排序报错
-        if not any(f.name == 'id' for f in model._meta.fields):
-            _VS.ordering = list(model._meta.ordering) if model._meta.ordering else None
+        if entry.key == 'perf_risk_indicators':
+            _VS.ordering = ['pid', 'id']
+        # 表无 id 字段时，使用真实主键字段排序，避免按 id 排序报错
+        elif not any(f.name == 'id' for f in model._meta.fields):
+            _VS.ordering = [f'-{model._meta.pk.name}']
         return _VS
 
     router.register(entry.key, _make_viewset(), basename=f'table-{entry.key}')
