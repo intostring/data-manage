@@ -1,0 +1,15 @@
+[Unit]
+Description=Data Manage Django API
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/data-manage/backend
+Environment="PATH=/var/www/data-manage/backend/.venv/bin"
+ExecStart=/var/www/data-manage/backend/.venv/bin/gunicorn config.wsgi:application --bind 127.0.0.1:8000 --workers 3 --timeout 300
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
