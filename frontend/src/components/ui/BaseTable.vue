@@ -6,7 +6,7 @@
           <th
             v-for="(col, idx) in columns"
             :key="col.key"
-            class="text-left font-semibold text-ink-muted px-3 py-2.5 whitespace-nowrap select-none align-top border-b border-line sticky top-0 bg-canvasDark"
+            class="text-left font-medium text-ink-muted px-3 py-2 whitespace-nowrap select-none align-top border-b border-line sticky top-0 bg-panelLight"
             :class="[
               isFrozen(idx) ? 'z-30' : 'z-20',
               isFrozen(idx) && idx === frozenCount - 1 ? 'shadow-[2px_0_4px_-2px_rgba(0,0,0,0.15)]' : '',
@@ -72,7 +72,7 @@
               </div>
             </div>
           </th>
-          <th v-if="$slots.actions" class="text-right font-semibold text-ink-muted px-3 py-2.5 border-b border-line sticky top-0 bg-canvasDark z-20">
+          <th v-if="$slots.actions" class="text-right font-medium text-ink-muted px-3 py-2 border-b border-line sticky top-0 bg-panelLight z-20">
             操作
           </th>
         </tr>
@@ -87,7 +87,7 @@
           <td
             v-for="(col, cIdx) in columns"
             :key="col.key"
-            class="px-3 py-2 text-ink whitespace-nowrap"
+            class="px-3 py-1.5 text-ink whitespace-nowrap"
             :class="[
               col.mono ? 'font-mono text-xs' : '',
               isFrozen(cIdx) ? 'sticky z-10 ' + (idx % 2 === 1 ? 'bg-canvas' : 'bg-panel') : '',
@@ -118,7 +118,7 @@
             </span>
             <template v-else>{{ formatCell(row[col.key], col) }}</template>
           </td>
-          <td v-if="$slots.actions" class="px-3 py-2 text-right whitespace-nowrap">
+          <td v-if="$slots.actions" class="px-3 py-1.5 text-right whitespace-nowrap">
             <slot name="actions" :row="row" />
           </td>
         </tr>

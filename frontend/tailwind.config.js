@@ -4,33 +4,31 @@ export default {
   theme: {
     extend: {
       colors: {
-        // 暗色主题风：深色背景 + 亮色文字 + 蓝色强调
-        canvas: '#0F172A',         // 页面背景：深蓝黑（slate-900）
-        panel: '#1E293B',          // 卡片/面板：深蓝灰（slate-800）
-        canvasDark: '#334155',     // 更深一层，用于表头/悬停（slate-700）
-        panelLight: '#273449',     // 稍亮的面板，用于输入框背景
+        canvas: '#F5F6F8',
+        panel: '#FFFFFF',
+        canvasDark: '#EEF1F4',
+        panelLight: '#F8FAFB',
         ink: {
-          DEFAULT: '#F1F5F9',      // 主文字：亮白（slate-100）
-          muted: '#94A3B8',        // 次要文字：浅蓝灰（slate-400）
-          faint: '#64748B',        // 占位/弱化：灰蓝（slate-500）
+          DEFAULT: '#1F2933',
+          muted: '#667085',
+          faint: '#98A2B3',
         },
-        line: '#334155',            // 分割线/边框（slate-700）
-        lineStrong: '#475569',      // 更强的边框（slate-600）
+        line: '#D9DEE5',
+        lineStrong: '#B8C0CC',
         accent: {
-          DEFAULT: '#3B82F6',      // 主色：亮蓝（blue-500）
-          hover: '#2563EB',        // 悬停：更深蓝（blue-600）
-          soft: '#1E3A5F',         // 浅蓝背景（暗色版）
+          DEFAULT: '#256B5B',
+          hover: '#1F5A4D',
+          soft: '#E5F0EC',
         },
-        success: '#10B981',         // 绿色（emerald-500）
-        danger: '#EF4444',          // 红色（red-500）
+        success: '#2F855A',
+        danger: '#D92D20',
         warning: '#F59E0B',
-        // 侧边栏更深一层
         sidebar: {
-          DEFAULT: '#0B1120',      // 侧边栏背景：更深的蓝黑
-          hover: '#1E293B',        // 悬停
-          active: '#1D4ED8',       // 选中：深蓝
-          text: '#CBD5E1',         // 文字
-          muted: '#64748B',        // 弱化文字
+          DEFAULT: '#25313D',
+          hover: '#303D49',
+          active: '#3B4A56',
+          text: '#E4E7EC',
+          muted: '#AAB2BD',
         },
       },
       fontFamily: {
@@ -41,9 +39,9 @@ export default {
         DEFAULT: '6px',
       },
       boxShadow: {
-        float: '0 4px 12px rgba(0,0,0,0.3)',
-        pop: '0 8px 24px rgba(0,0,0,0.4)',
-        card: '0 2px 8px rgba(0,0,0,0.2)',
+        float: '0 8px 24px rgba(31,41,51,0.10)',
+        pop: '0 16px 40px rgba(31,41,51,0.14)',
+        card: '0 1px 2px rgba(31,41,51,0.06)',
       },
     },
   },

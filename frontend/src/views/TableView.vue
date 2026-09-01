@@ -184,9 +184,15 @@ const deleting = ref(false)
 
 let searchTimer = null
 
-const editableColumns = computed(() => columns.value.filter((c) => c.key !== 'id' && c.type !== 'date' && c.type !== 'datetime'))
+const TABLE_PRIMARY_KEYS = {
+  mom_account_record: 'account_id',
+  mom_product_info: 'product_code',
+  fut_symbol_info: 'code',
+}
+
+const primaryKey = computed(() => TABLE_PRIMARY_KEYS[tableKey.value] || columns.value.find((c) => c.primary_key)?.key || 'id')
+const editableColumns = computed(() => columns.value.filter((c) => c.key !== primaryKey.value && c.type !== 'date' && c.type !== 'datetime'))
 const dateColumns = computed(() => columns.value.filter((c) => c.type === 'date' || c.type === 'datetime'))
-const primaryKey = computed(() => columns.value.find((c) => c.primary_key)?.key || 'id')
 
 const OP_LABELS = {
   eq: '等于', ne: '不等于', contains: '包含', not_contains: '不包含',
@@ -303,12 +309,17 @@ function buildColumns(colsMeta, tableKey) {
     if (DATE_STR_FIELDS.has(c.name)) colType = 'date'
     const isMomStopField = tableKey === 'mom_account_record' && c.name === 'is_stop'
     const isMomAccountTagField = tableKey === 'mom_account_record' && c.name === 'account_tag'
+    const isFofHoldingStateField = tableKey === 'fof_fund_info' && c.name === 'hd_state'
     const isRiskPercentField = tableKey === 'perf_risk_indicators'
       && (
         c.name.startsWith('annual_yield_')
         || c.name.startsWith('annual_volatility_')
         || c.name.startsWith('max_drawdown_')
       )
+    const isFofHoldingDecimal2Field = tableKey === 'fof_holding_daily'
+      && ['share', 'nav', 'market_value'].includes(c.name)
+    const isFofHoldingMixDecimal2Field = tableKey === 'fof_holding_daily_mix'
+      && ['market_value', 'adj_item'].includes(c.name)
     return {
       key: c.name,
       label: labelParts.label,
@@ -323,7 +334,7 @@ function buildColumns(colsMeta, tableKey) {
         ? { 0: '启用', 1: '停止' }
         : (isMomAccountTagField
           ? { 1: '外部投顾', 2: '内部投顾', 3: '外部代持', 4: '内部持仓' }
-          : undefined),
+          : (isFofHoldingStateField ? { 0: '赎回', 1: '持有' } : undefined)),
       options: isMomStopField
         ? [
           { label: '启用', value: 0 },
@@ -336,16 +347,23 @@ function buildColumns(colsMeta, tableKey) {
             { label: '外部代持', value: 3 },
             { label: '内部持仓', value: 4 },
           ]
-          : undefined),
+          : (isFofHoldingStateField
+            ? [
+              { label: '赎回', value: 0 },
+              { label: '持有', value: 1 },
+            ]
+            : undefined)),
       format: INTEGER_FIELDS.has(c.name)
         ? 'integer'
         : (isRiskPercentField
           ? 'percent1'
+          : (isFofHoldingDecimal2Field || isFofHoldingMixDecimal2Field
+          ? 'decimal2'
           : (['max_pos_rate', 'perf_fee'].includes(c.name)
           ? 'percent2'
           : (DECIMAL2_FIELDS.has(c.name)
           ? 'decimal2'
-          : (DECIMAL4_FIELDS.has(c.name) ? 'decimal4' : undefined)))),
+          : (DECIMAL4_FIELDS.has(c.name) ? 'decimal4' : undefined))))),
       expandable: c.type === 'text' || EXPANDABLE_STR_FIELDS.has(c.name),
       truncate: c.name === 'raw_json',
     }
@@ -526,6 +544,11 @@ async function saveRecord() {
       if (formMode.value === 'create') {
         await client.post(`/tables/${tableKey.value}/`, payload)
       } else {
+        delete payload[primaryKey.value]
+        if (!editingId.value) {
+          toast.error('缺少记录主键，无法保存')
+          return
+        }
         await client.patch(`/tables/${tableKey.value}/${encodeURIComponent(editingId.value)}/`, payload)
       }
     } else {

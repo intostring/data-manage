@@ -2,7 +2,7 @@
   <Teleport to="body">
     <Transition name="modal">
       <div v-if="show" class="fixed inset-0 z-50 flex items-start justify-center pt-20 px-4">
-        <div class="absolute inset-0 bg-black/60" @click="onClose" />
+        <div class="absolute inset-0 bg-slate-900/35" @click="onClose" />
         <div class="relative w-full max-w-lg bg-panel rounded shadow-pop border border-line">
           <div class="flex items-center justify-between px-5 py-4 border-b border-line">
             <h3 class="text-base font-semibold text-ink">{{ title }}</h3>
@@ -13,7 +13,7 @@
           <div class="px-5 py-4 max-h-[60vh] overflow-y-auto">
             <slot />
           </div>
-          <div v-if="$slots.footer" class="flex items-center justify-end gap-2 px-5 py-3 border-t border-line bg-canvas/50 rounded-b">
+          <div v-if="$slots.footer" class="flex items-center justify-end gap-2 px-5 py-3 border-t border-line bg-panelLight rounded-b">
             <slot name="footer" />
           </div>
         </div>

@@ -1,5 +1,5 @@
 <template>
-  <header class="h-14 shrink-0 bg-panel border-b border-line flex items-center justify-between px-6">
+  <header class="h-12 shrink-0 bg-panel border-b border-line flex items-center justify-between px-5">
     <div class="flex items-center gap-2 text-sm">
       <span class="text-ink-faint">数据管理</span>
       <span class="text-ink-faint">/</span>

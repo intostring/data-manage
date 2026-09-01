@@ -1,12 +1,12 @@
 <template>
   <div class="min-h-screen bg-canvas flex items-center justify-center px-4">
     <div class="w-full max-w-sm">
-      <div class="mb-8 text-center">
-        <h1 class="text-2xl font-bold text-ink tracking-tight">数据管理平台</h1>
-        <p class="text-sm text-ink-muted mt-1">登录以管理你的数据表</p>
+      <div class="mb-6">
+        <h1 class="text-xl font-semibold text-ink tracking-tight">数据管理平台</h1>
+        <p class="text-sm text-ink-muted mt-1">请输入账号信息</p>
       </div>
 
-      <form @submit.prevent="onSubmit" class="bg-panel border border-line rounded p-6 shadow-float space-y-4">
+      <form @submit.prevent="onSubmit" class="bg-panel border border-line rounded p-5 shadow-card space-y-4">
         <BaseInput
           v-model="form.username"
           label="用户名"
@@ -28,9 +28,7 @@
         </BaseButton>
       </form>
 
-      <p class="text-center text-xs text-ink-faint mt-6">
-        使用 Django 管理员账号登录
-      </p>
+      <p class="text-xs text-ink-faint mt-4">账号由系统管理员维护</p>
     </div>
   </div>
 </template>

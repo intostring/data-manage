@@ -3,7 +3,7 @@
     <AppSidebar />
     <div class="flex-1 flex flex-col min-w-0">
       <AppHeader />
-      <main class="flex-1 overflow-y-auto p-6">
+      <main class="flex-1 overflow-y-auto px-6 py-5">
         <router-view />
       </main>
     </div>

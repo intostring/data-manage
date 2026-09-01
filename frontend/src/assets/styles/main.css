@@ -16,38 +16,36 @@
     box-sizing: border-box;
   }
   ::selection {
-    background: #3B82F6;
+    background: #256B5B;
     color: #FFFFFF;
   }
-  /* 暗色滚动条 */
   ::-webkit-scrollbar {
     width: 8px;
     height: 8px;
   }
   ::-webkit-scrollbar-track {
-    background: #0F172A;
+    background: #F5F6F8;
   }
   ::-webkit-scrollbar-thumb {
-    background: #475569;
+    background: #C7CED8;
     border-radius: 4px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #64748B;
+    background: #AAB2BD;
   }
-  /* 输入框自动填充暗色 */
   input:-webkit-autofill,
   input:-webkit-autofill:hover,
   input:-webkit-autofill:focus {
-    -webkit-text-fill-color: #F1F5F9;
-    -webkit-box-shadow: 0 0 0 1000px #273449 inset;
+    -webkit-text-fill-color: #1F2933;
+    -webkit-box-shadow: 0 0 0 1000px #F8FAFB inset;
     transition: background-color 5000s ease-in-out 0s;
   }
 }
 
 @layer components {
   .input-base {
-    @apply w-full px-3 py-2 bg-panelLight border border-line rounded text-ink text-sm
-           focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30
+    @apply w-full px-3 py-2 bg-panel border border-line rounded text-ink text-sm
+           focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20
            transition-colors placeholder:text-ink-faint;
   }
   .label-base {

@@ -465,3 +465,259 @@ class OptMarketData(models.Model):
         db_table = 'opt_market_data'
         unique_together = (('ts_code', 'trade_date'),)
         db_table_comment = '期权日线行情数据(tushare opt_daily)'
+
+
+class FofEmailHypo(models.Model):
+    product_id = models.CharField(primary_key=True, max_length=50)
+    product_name = models.CharField(max_length=50, blank=True, null=True)
+    fund_code = models.CharField(max_length=50)
+    fund_name = models.CharField(max_length=50, blank=True, null=True)
+    trade_date = models.DateField()
+    share = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True)
+    nav_hypo = models.DecimalField(max_digits=18, decimal_places=8, blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'fof_email_hypo'
+        unique_together = (('product_id', 'fund_code', 'trade_date'),)
+        db_table_comment = '从邮件中读取虚拟净值数据'
+
+
+class FofEmailNav(models.Model):
+    fund_code = models.CharField(primary_key=True, max_length=50)
+    fund_name = models.CharField(max_length=50, blank=True, null=True)
+    trade_date = models.DateField()
+    unit_nav = models.DecimalField(max_digits=18, decimal_places=8, blank=True, null=True)
+    accum_nav = models.DecimalField(max_digits=18, decimal_places=8, blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'fof_email_nav'
+        unique_together = (('fund_code', 'trade_date'),)
+        db_table_comment = '从邮件中读取单位净值和累计净值数据'
+
+
+class FofFundInfo(models.Model):
+    product_id = models.CharField(primary_key=True, max_length=50, db_comment='产品代码')
+    product_name = models.CharField(max_length=50, blank=True, null=True, db_comment='产品简称')
+    fund_code = models.CharField(max_length=50, db_comment='基金代码')
+    fund_name = models.CharField(max_length=50, blank=True, null=True, db_comment='基金简称')
+    full_name = models.CharField(max_length=255, blank=True, null=True, db_comment='基金全称')
+    pr_order = models.IntegerField(db_comment='申赎序号（完整的申赎为一次）')
+    purchase_date = models.DateField(db_comment='申购日期')
+    redeem_date = models.DateField(blank=True, null=True, db_comment='赎回日期')
+    hd_state = models.IntegerField(blank=True, null=True, db_comment='持有状态(1为持有；0为赎回）')
+    cate_code_l1 = models.CharField(max_length=255, blank=True, null=True, db_comment='一级分类代码')
+    cate_name_l1 = models.CharField(max_length=255, blank=True, null=True, db_comment='一级分类简称')
+    cate_code_l2 = models.CharField(max_length=255, blank=True, null=True, db_comment='二级代码')
+    cate_name_l2 = models.CharField(max_length=255, blank=True, null=True, db_comment='二级简称')
+    cate_code_l3 = models.CharField(max_length=255, blank=True, null=True, db_comment='三级代码')
+    cate_name_l3 = models.CharField(max_length=255, blank=True, null=True, db_comment='三级简称')
+
+    class Meta:
+        managed = False
+        db_table = 'fof_fund_info'
+        unique_together = (('product_id', 'fund_code', 'purchase_date', 'pr_order'),)
+        db_table_comment = '产品持仓基金的基本信息'
+
+
+class FofFundShareChg(models.Model):
+    product_id = models.CharField(primary_key=True, max_length=50, db_comment='产品代码')
+    product_name = models.CharField(max_length=50, blank=True, null=True, db_comment='产品简称')
+    trade_date = models.DateField(db_comment='份额变动日期')
+    confirm_date = models.DateField(blank=True, null=True, db_comment='确认日期')
+    fund_code = models.CharField(max_length=50, db_comment='证券代码')
+    fund_name = models.CharField(max_length=50, blank=True, null=True, db_comment='证券简称')
+    share_chg = models.DecimalField(max_digits=18, decimal_places=6, blank=True, null=True, db_comment='份额变动；如果为负，则为卖出')
+    price = models.DecimalField(max_digits=18, decimal_places=8, blank=True, null=True, db_comment='变动价格')
+    market_value = models.DecimalField(max_digits=18, decimal_places=2, blank=True, null=True, db_comment='市值')
+    cost = models.DecimalField(max_digits=18, decimal_places=2, blank=True, null=True, db_comment='费用（申赎费，业绩报酬等）')
+    tips = models.CharField(max_length=100, blank=True, null=True, db_comment='操作说明')
+    is_clear = models.IntegerField(blank=True, null=True, db_comment='是否清仓')
+    chg_type = models.IntegerField(db_comment='份额变动类型')
+    chg_name = models.CharField(max_length=50, blank=True, null=True, db_comment='份额变动名称')
+
+    class Meta:
+        managed = False
+        db_table = 'fof_fund_share_chg'
+        unique_together = (('product_id', 'trade_date', 'fund_code', 'chg_type'),)
+        db_table_comment = '份额变动表'
+
+
+class FofHoldingDaily(models.Model):
+    product_id = models.CharField(primary_key=True, max_length=50, db_comment='FOF母基金ID')
+    product_name = models.CharField(max_length=50, blank=True, null=True, db_comment='FOF母基金简称')
+    trade_date = models.DateField(db_comment='交易日')
+    fund_code = models.CharField(max_length=50, db_comment='基金代码')
+    fund_name = models.CharField(max_length=50, blank=True, null=True, db_comment='基金简称')
+    share = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='基金份额')
+    nav = models.DecimalField(max_digits=18, decimal_places=8, blank=True, null=True, db_comment='基金虚拟净值')
+    market_value = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='基金市值')
+
+    class Meta:
+        managed = False
+        db_table = 'fof_holding_daily'
+        unique_together = (('product_id', 'trade_date', 'fund_code'),)
+        db_table_comment = '产品每日持仓'
+
+
+class FofHoldingDailyMix(models.Model):
+    product_id = models.CharField(primary_key=True, max_length=50, db_comment='FOF母基金ID')
+    product_name = models.CharField(max_length=50, blank=True, null=True, db_comment='FOF母基金简称')
+    trade_date = models.DateField(db_comment='交易日')
+    fund_code = models.CharField(max_length=50, db_comment='基金代码')
+    fund_name = models.CharField(max_length=50, blank=True, null=True, db_comment='基金简称')
+    market_value = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='基金市值')
+    adj_item = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='调节项')
+
+    class Meta:
+        managed = False
+        db_table = 'fof_holding_daily_mix'
+        unique_together = (('product_id', 'trade_date', 'fund_code'),)
+        db_table_comment = '产品每日持仓'
+
+
+class FofNavHypo(models.Model):
+    product_id = models.CharField(max_length=50)
+    product_name = models.CharField(max_length=50, blank=True, null=True)
+    fund_code = models.CharField(primary_key=True, max_length=50)
+    fund_name = models.CharField(max_length=50, blank=True, null=True)
+    trade_date = models.DateField()
+    unit_nav = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True)
+    hypo_nav = models.DecimalField(max_digits=18, decimal_places=8, blank=True, null=True)
+    create_time = models.DateTimeField()
+    update_time = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'fof_nav_hypo'
+        unique_together = (('fund_code', 'trade_date', 'product_id'),)
+        db_table_comment = '虚拟净值表'
+
+
+class FofProductNav(models.Model):
+    product_id = models.CharField(primary_key=True, max_length=20, db_comment='产品代码')
+    product_name = models.CharField(max_length=50, blank=True, null=True, db_comment='产品简称')
+    trade_date = models.DateField(db_comment='日期')
+    f_1002 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='银行存款')
+    f_1021 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='结算备付金')
+    f_1031 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='存出保证金')
+    f_1105 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='交易类基金投资')
+    f_1108 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='理财投资')
+    f_1109 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='其他投资')
+    f_1202 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='买入返售金融资产')
+    f_1203 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='应收股利')
+    f_1204 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='应收利息')
+    f_1207 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='应收申购款')
+    f_1221 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='其他应收款')
+    f_2211 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='应付基金运营服务费')
+    f_2206 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='应付管理人报酬')
+    f_2207 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='应付托管费')
+    f_2331 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='应付税费')
+    f_3003 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='证券清算款')
+    f_3102 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='衍生工具')
+    capital = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='实收资本')
+    asset_total = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='资产合计')
+    debt_total = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='负债合计')
+    asset_net = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='资产净值')
+    unit_nav_begin = models.DecimalField(max_digits=8, decimal_places=4, blank=True, null=True, db_comment='期初单位净值')
+    unit_nav = models.DecimalField(max_digits=8, decimal_places=4, blank=True, null=True, db_comment='单位净值')
+    accum_nav = models.DecimalField(max_digits=8, decimal_places=4, blank=True, null=True, db_comment='累计单位净值')
+
+    class Meta:
+        managed = False
+        db_table = 'fof_product_nav'
+        unique_together = (('product_id', 'trade_date'),)
+        db_table_comment = '渊流产品每日净值'
+
+
+class FofProductNav2(models.Model):
+    product_id = models.CharField(primary_key=True, max_length=20, db_comment='产品代码')
+    product_name = models.CharField(max_length=50, blank=True, null=True, db_comment='产品简称')
+    trade_date = models.DateField()
+    f_1002 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='银行存款')
+    f_1021 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='结算备付金')
+    f_1031 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='存出保证金')
+    f_1103 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='交易性债券投资')
+    f_1105 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='交易类基金投资')
+    f_1108 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='理财投资')
+    f_1109 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='其他投资')
+    f_1204 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='应收利息')
+    f_2205 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='应付运营管理费')
+    f_2206 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='应付管理人报酬')
+    f_2207 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='应付托管费')
+    f_3003 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='证券清算款')
+    f_3102 = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='衍生工具')
+    capital = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='实收资本')
+    asset_total = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='资产合计')
+    debt_total = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='负债合计')
+    asset_net = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='资产净值')
+    unit_nav_begin = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='期初单位净值')
+    unit_nav = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='今日单位净值')
+    accum_nav = models.DecimalField(max_digits=18, decimal_places=4, blank=True, null=True, db_comment='累计单位净值')
+
+    class Meta:
+        managed = False
+        db_table = 'fof_product_nav2'
+        unique_together = (('product_id', 'trade_date'),)
+        db_table_comment = '臻选贰号每日净值'
+
+
+class FutCodesZl(models.Model):
+    id = models.IntegerField(primary_key=True)
+    code = models.CharField(max_length=50, blank=True, null=True)
+    symbol_code = models.CharField(max_length=50, blank=True, null=True)
+    symbol_name = models.CharField(max_length=50, blank=True, null=True)
+    ts_dom_code = models.CharField(max_length=50, blank=True, null=True)
+    ts_dom_name = models.CharField(max_length=50, blank=True, null=True)
+    ts_cont_code = models.CharField(max_length=50, blank=True, null=True)
+    ts_cont_name = models.CharField(max_length=50, blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'fut_codes_zl'
+
+
+class FutContractStats(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    trade_date = models.DateField()
+    ts_code = models.CharField(max_length=50)
+    variety_code = models.CharField(max_length=20)
+    variety_name = models.CharField(max_length=30)
+    sector_code = models.CharField(max_length=30)
+    sector_name = models.CharField(max_length=30)
+    open = models.DecimalField(max_digits=16, decimal_places=2, blank=True, null=True)
+    high = models.DecimalField(max_digits=16, decimal_places=2, blank=True, null=True)
+    low = models.DecimalField(max_digits=16, decimal_places=2, blank=True, null=True)
+    close = models.DecimalField(max_digits=16, decimal_places=2, blank=True, null=True)
+    settle = models.DecimalField(max_digits=16, decimal_places=2, blank=True, null=True)
+    volume = models.DecimalField(max_digits=20, decimal_places=0, blank=True, null=True)
+    amount = models.DecimalField(max_digits=22, decimal_places=2, blank=True, null=True)
+    oi = models.DecimalField(max_digits=20, decimal_places=0, blank=True, null=True)
+    vol_10d = models.DecimalField(max_digits=10, decimal_places=4, blank=True, null=True)
+    vol_20d = models.DecimalField(max_digits=10, decimal_places=4, blank=True, null=True)
+    vol_60d = models.DecimalField(max_digits=10, decimal_places=4, blank=True, null=True)
+    create_time = models.DateTimeField()
+    update_time = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'fut_contract_stats'
+        unique_together = (('ts_code', 'trade_date'),)
+
+
+class TradeDays(models.Model):
+    calendar_date = models.DateField(primary_key=True, db_comment='日历日')
+    is_open = models.IntegerField(blank=True, null=True, db_comment='是否是交易日')
+    pre_trade_date = models.DateField(blank=True, null=True, db_comment='前一交易日')
+    is_week_end = models.IntegerField(blank=True, null=True, db_comment='是否是周的最后一个交易日')
+    is_month_end = models.IntegerField(blank=True, null=True, db_comment='是否是月的最后一交易日')
+    is_quarter_end = models.IntegerField(blank=True, null=True, db_comment='是否是季的最后一个交易日')
+    is_year_end = models.IntegerField(blank=True, null=True, db_comment='是否是年的最后一个交易日')
+    exchange_cd = models.CharField(max_length=10, db_comment='属于哪个交易所')
+
+    class Meta:
+        managed = False
+        db_table = 'trade_days'
+        unique_together = (('calendar_date', 'exchange_cd'),)
+        db_table_comment = '交易日期表'

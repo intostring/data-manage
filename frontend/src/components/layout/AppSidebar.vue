@@ -2,7 +2,7 @@
   <aside class="w-56 shrink-0 bg-sidebar flex flex-col">
     <div class="px-4 py-3 border-b border-white/10">
       <h1 class="text-sm font-bold text-white tracking-tight">数据管理平台</h1>
-      <p class="text-xs text-sidebar-muted mt-0.5">Data Console</p>
+      <p class="text-xs text-sidebar-muted mt-0.5">业务数据后台</p>
     </div>
 
     <nav class="flex-1 overflow-y-auto py-2">

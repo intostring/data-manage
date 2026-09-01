@@ -1,27 +1,26 @@
 <template>
   <div class="max-w-6xl">
-    <div class="mb-6">
-      <h2 class="text-xl font-bold text-ink">概览</h2>
-      <p class="text-sm text-ink-muted mt-1">管理你的全部数据表</p>
+    <div class="mb-5">
+      <h2 class="text-lg font-semibold text-ink">概览</h2>
+      <p class="text-sm text-ink-muted mt-1">当前数据表与同步状态</p>
     </div>
 
-    <!-- 统计卡片 -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-      <div class="bg-panel border border-line rounded p-5 shadow-card">
-        <p class="text-xs text-ink-muted uppercase tracking-wider mb-2">已有表</p>
-        <p class="text-3xl font-bold text-ink">{{ tables.existingTables.length }}</p>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+      <div class="bg-panel border border-line rounded px-4 py-3 shadow-card">
+        <p class="text-xs text-ink-muted mb-1">已有表</p>
+        <p class="text-2xl font-semibold text-ink">{{ tables.existingTables.length }}</p>
       </div>
-      <div class="bg-panel border border-line rounded p-5 shadow-card">
-        <p class="text-xs text-ink-muted uppercase tracking-wider mb-2">动态表</p>
-        <p class="text-3xl font-bold text-ink">{{ tables.dynamicTables.length }}</p>
+      <div class="bg-panel border border-line rounded px-4 py-3 shadow-card">
+        <p class="text-xs text-ink-muted mb-1">动态表</p>
+        <p class="text-2xl font-semibold text-ink">{{ tables.dynamicTables.length }}</p>
       </div>
-      <div class="bg-panel border border-line rounded p-5 shadow-card">
-        <p class="text-xs text-ink-muted uppercase tracking-wider mb-2">总数据量</p>
-        <p class="text-3xl font-bold text-ink">{{ formatNumber(totalAllRows) }}</p>
+      <div class="bg-panel border border-line rounded px-4 py-3 shadow-card">
+        <p class="text-xs text-ink-muted mb-1">总数据量</p>
+        <p class="text-2xl font-semibold text-ink">{{ formatNumber(totalAllRows) }}</p>
       </div>
-      <div class="bg-panel border border-line rounded p-5 shadow-card">
-        <p class="text-xs text-ink-muted uppercase tracking-wider mb-2">最近更新</p>
-        <p class="text-sm font-medium text-ink mt-1.5">{{ latestUpdate || '—' }}</p>
+      <div class="bg-panel border border-line rounded px-4 py-3 shadow-card">
+        <p class="text-xs text-ink-muted mb-1">最近更新</p>
+        <p class="text-sm font-medium text-ink mt-1">{{ latestUpdate || '—' }}</p>
       </div>
     </div>
 
