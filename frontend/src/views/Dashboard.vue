@@ -1,5 +1,5 @@
 <template>
-  <div class="max-w-6xl">
+  <div class="w-full max-w-6xl mx-auto">
     <div class="mb-5">
       <h2 class="text-lg font-semibold text-ink">概览</h2>
       <p class="text-sm text-ink-muted mt-1">当前数据表与同步状态</p>
