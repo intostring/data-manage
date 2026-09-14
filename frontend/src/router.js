@@ -8,8 +8,25 @@ const routes = [
     component: () => import('./views/Login.vue'),
     meta: { public: true },
   },
+  // 默认进入前台分析
+  { path: '/', redirect: '/display/overview' },
+  // 前台分析
   {
-    path: '/',
+    path: '/display',
+    component: () => import('./views/DisplayLayout.vue'),
+    children: [
+      { path: 'overview', name: 'display-overview', component: () => import('./views/display/Overview.vue') },
+      { path: 'advisor', name: 'display-advisor', component: () => import('./views/display/AdvisorPerformance.vue') },
+      { path: 'position', name: 'display-position', component: () => import('./views/display/PositionAnalysis.vue') },
+      { path: 'trade', name: 'display-trade', component: () => import('./views/display/TradeAnalysis.vue') },
+      { path: 'risk', name: 'display-risk', component: () => import('./views/display/RiskControl.vue') },
+      { path: 'strategy', name: 'display-strategy', component: () => import('./views/display/StrategyAnalysis.vue') },
+      { path: '', redirect: { name: 'display-overview' } },
+    ],
+  },
+  // 后台管理
+  {
+    path: '/admin',
     component: () => import('./views/AppLayout.vue'),
     children: [
       { path: '', name: 'dashboard', component: () => import('./views/Dashboard.vue') },
@@ -32,7 +49,7 @@ router.beforeEach((to) => {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (to.name === 'login' && auth.isAuthenticated) {
-    return { name: 'dashboard' }
+    return { name: 'display-overview' }
   }
 })
 

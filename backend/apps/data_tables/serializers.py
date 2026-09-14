@@ -22,6 +22,7 @@ from .models import (
     OptRiskStats,
     PerfProducts,
     PerfRiskIndicators,
+    PerfNetValues,
     QuotesDynamic,
     QuotesStatic,
     RhAdvisors,
@@ -55,6 +56,12 @@ class PerfProductsSerializer(serializers.ModelSerializer):
 class PerfRiskIndicatorsSerializer(serializers.ModelSerializer):
     class Meta:
         model = PerfRiskIndicators
+        fields = '__all__'
+
+
+class PerfNetValuesSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PerfNetValues
         fields = '__all__'
 
 
@@ -212,6 +219,7 @@ table_registry.register('mom_account_record', MomAccountRecord, MomAccountRecord
 table_registry.register('mom_product_info', MomProductInfo, MomProductInfoSerializer, 'MOM产品信息', 'mom')
 table_registry.register('perf_products', PerfProducts, PerfProductsSerializer, '绩效产品', 'performance')
 table_registry.register('perf_risk_indicators', PerfRiskIndicators, PerfRiskIndicatorsSerializer, '风险指标', 'performance')
+table_registry.register('perf_net_values', PerfNetValues, PerfNetValuesSerializer, '净值数据', 'performance')
 table_registry.register('rh_advisors', RhAdvisors, RhAdvisorsSerializer, '投顾账户', 'rh')
 table_registry.register('rh_funds', RhFunds, RhFundsSerializer, '权益信息', 'rh')
 table_registry.register('rh_orders', RhOrders, RhOrdersSerializer, '委托信息', 'rh')

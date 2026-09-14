@@ -60,7 +60,7 @@
         <template #actions="{ row }">
           <button
             class="text-xs text-accent hover:underline"
-            @click="$router.push(`/table/dynamic/${row.key}`)"
+            @click="$router.push(`/admin/table/dynamic/${row.key}`)"
           >
             查看
           </button>

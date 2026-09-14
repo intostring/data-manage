@@ -106,6 +106,24 @@ class PerfRiskIndicators(models.Model):
         db_table = 'perf_risk_indicators'
 
 
+class PerfNetValues(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    pid = models.BigIntegerField(blank=True, null=True, db_comment='产品ID')
+    trade_date = models.DateField(blank=True, null=True, db_comment='交易日期')
+    net_value = models.FloatField(blank=True, null=True, db_comment='单位净值')
+    accumulated_net = models.FloatField(blank=True, null=True, db_comment='累计净值')
+    daily_return_rate = models.FloatField(blank=True, null=True, db_comment='日收益率')
+    bonus_net_value = models.FloatField(blank=True, null=True, db_comment='分红净值')
+    sum_bonus_net_value = models.CharField(max_length=255, blank=True, null=True, db_comment='累计分红净值')
+    net_value_type = models.FloatField(blank=True, null=True, db_comment='净值类型')
+    raw_json = models.JSONField(db_comment='接口原始行JSON')
+    created_at = models.DateTimeField(db_comment='入库时间')
+
+    class Meta:
+        managed = False
+        db_table = 'perf_net_values'
+
+
 class QuotesDynamic(models.Model):
     uid = models.CharField(primary_key=True, max_length=64)
     text = models.CharField(max_length=512, blank=True, null=True)

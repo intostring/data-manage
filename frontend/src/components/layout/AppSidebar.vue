@@ -8,7 +8,15 @@
     <nav class="flex-1 overflow-y-auto py-2">
       <div class="px-2 mb-1">
         <router-link
-          to="/"
+          to="/display/overview"
+          class="flex items-center gap-2 px-2.5 py-1.5 rounded text-sm transition-colors"
+          :class="isDisplayActive() ? 'bg-sidebar-active text-white font-medium' : 'text-sidebar-text hover:bg-sidebar-hover hover:text-white'"
+        >
+          <LineChart :size="15" :stroke-width="1.75" />
+          分析展示
+        </router-link>
+        <router-link
+          to="/admin"
           class="flex items-center gap-2 px-2.5 py-1.5 rounded text-sm transition-colors"
           :class="isActive('dashboard') ? 'bg-sidebar-active text-white font-medium' : 'text-sidebar-text hover:bg-sidebar-hover hover:text-white'"
         >
@@ -16,7 +24,7 @@
           概览
         </router-link>
         <router-link
-          to="/upload"
+          to="/admin/upload"
           class="flex items-center gap-2 px-2.5 py-1.5 rounded text-sm transition-colors"
           :class="isActive('upload') ? 'bg-sidebar-active text-white font-medium' : 'text-sidebar-text hover:bg-sidebar-hover hover:text-white'"
         >
@@ -25,7 +33,7 @@
         </router-link>
         <router-link
           v-if="auth.user?.is_superuser"
-          to="/system/users"
+          to="/admin/system/users"
           class="flex items-center gap-2 px-2.5 py-1.5 rounded text-sm transition-colors"
           :class="isActive('system-users') ? 'bg-sidebar-active text-white font-medium' : 'text-sidebar-text hover:bg-sidebar-hover hover:text-white'"
         >
@@ -49,7 +57,7 @@
           <router-link
             v-for="t in tables.momTables"
             :key="t.key"
-            :to="`/table/existing/${t.key}`"
+            :to="`/admin/table/existing/${t.key}`"
             class="flex items-center gap-2 pl-8 pr-2.5 py-1 rounded text-sm transition-colors"
             :class="isTableActive('existing', t.key) ? 'bg-sidebar-active text-white font-medium' : 'text-sidebar-text hover:bg-sidebar-hover hover:text-white'"
           >
@@ -73,7 +81,7 @@
           <router-link
             v-for="t in section.tables"
             :key="t.key"
-            :to="`/table/existing/${t.key}`"
+            :to="`/admin/table/existing/${t.key}`"
             class="flex items-center gap-2 pl-8 pr-2.5 py-1 rounded text-sm transition-colors"
             :class="isTableActive('existing', t.key) ? 'bg-sidebar-active text-white font-medium' : 'text-sidebar-text hover:bg-sidebar-hover hover:text-white'"
           >
@@ -140,7 +148,7 @@ function toggleSection(key) {
 watch(
   () => route.path,
   (p) => {
-    if (p.includes('/table/existing/')) {
+    if (p.includes('/admin/table/existing/')) {
       // 根据当前表所属分组自动展开
       const key = p.split('/').pop()
       const t = tables.existingTables.find((e) => e.key === key)
@@ -157,6 +165,9 @@ watch(
 
 function isActive(name) {
   return route.name === name
+}
+function isDisplayActive() {
+  return route.path.startsWith('/display')
 }
 function isTableActive(kind, key) {
   return route.params.key === key && (route.name === 'existing-table' || route.name === 'dynamic-table') && route.path.includes(kind)

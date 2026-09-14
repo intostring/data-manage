@@ -56,7 +56,7 @@ async function onSubmit() {
   try {
     await auth.login(form.username, form.password)
     toast.success('登录成功')
-    const redirect = route.query.redirect || '/'
+    const redirect = route.query.redirect || '/display/overview'
     router.push(redirect)
   } catch (e) {
     const msg = e.response?.data?.detail || '登录失败，请检查账号密码'

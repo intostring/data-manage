@@ -29,5 +29,6 @@ urlpatterns = [
     path('<str:key>/export/', views.table_export, name='table-export'),
     path('<str:key>/import/', views.table_import, name='table-import'),
     path('<str:key>/template/', views.table_template, name='table-template'),
+    path('advisor/performance/', views.advisor_performance, name='advisor-performance'),
     path('', include(router.urls)),
 ]

@@ -146,7 +146,7 @@ async function onUpload() {
     const { data } = await client.post('/dynamic/', fd)
     toast.success(`已建表「${data.label}」，导入 ${data.imported_rows} 条`)
     await tables.fetchAll()
-    router.push(`/table/dynamic/${data.key}`)
+    router.push(`/admin/table/dynamic/${data.key}`)
   } catch (e) {
     toast.error(e.response?.data?.detail || '上传失败')
   } finally {

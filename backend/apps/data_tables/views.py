@@ -374,6 +374,134 @@ def _get_unique_fields(model):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def advisor_performance(request):
+    """投顾业绩聚合接口。
+
+    无参数：返回投顾产品列表 [{pid, product_name}]
+    ?pid=xxx：返回单个投顾的基本信息 + 风险收益指标
+    """
+    from .models import PerfProducts, PerfRiskIndicators, PerfNetValues, MomAccountRecord
+
+    pid = request.query_params.get('pid')
+    search = request.query_params.get('search', '').strip()
+    if not pid:
+        # 返回投顾列表（有风险指标 + 有净值数据的，按 pid 排序）
+        pids_with_risk = set(PerfRiskIndicators.objects.values_list('pid', flat=True))
+        pids_with_nav = set(PerfNetValues.objects.filter(net_value__isnull=False).values_list('pid', flat=True))
+        qs = PerfProducts.objects.filter(pid__in=pids_with_risk & pids_with_nav).order_by('pid')
+        # 批量关联 MomAccountRecord 获取投顾名称和代码
+        acct_map = {}
+        for m in MomAccountRecord.objects.filter(account_id__in=[p.product_name for p in qs]):
+            acct_map[m.account_id] = m
+        result = []
+        for p in qs:
+            acct = acct_map.get(p.product_name)
+            account_name = acct.account_name if acct else None
+            account_code = acct.account_id if acct else p.product_name
+            # 模糊搜索：匹配 account_name、account_code、product_name、pid
+            if search:
+                search_lower = search.lower()
+                match_fields = [str(p.pid), p.product_name or '', account_name or '', account_code or '']
+                if not any(search_lower in f.lower() for f in match_fields):
+                    continue
+            result.append({
+                'pid': p.pid,
+                'product_name': p.product_name,
+                'account_name': account_name,
+                'account_code': account_code,
+            })
+        return Response(result)
+
+    # 单个投顾详情
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return Response({'detail': 'pid 参数无效'}, status=400)
+
+    product = PerfProducts.objects.filter(pid=pid_int).first()
+    if not product:
+        return Response({'detail': f'未找到 pid={pid} 的产品'}, status=404)
+
+    risk = PerfRiskIndicators.objects.filter(pid=pid_int).first()
+
+    # 从 MomAccountRecord 取投顾概览（account_id = product_name）
+    acct = MomAccountRecord.objects.filter(account_id=product.product_name).first()
+
+    # 基本信息
+    rj = product.raw_json or {}
+    info = {
+        'pid': product.pid,
+        'product_name': product.product_name,
+        'group_name': rj.get('groupName'),
+        'product_type': product.product_type,
+        'last_edit_ts': product.last_edit_ts,
+        # 投顾概览（来自 mom_account_record）
+        'account_name': acct.account_name if acct else None,
+        'account_code': acct.account_id if acct else None,
+        'is_stop': acct.is_stop if acct else None,
+        'invest_logic': acct.invest_logic if acct else None,
+        'invest_cate': acct.invest_cate if acct else None,
+        'product_name_cn': acct.product_name if acct else None,
+    }
+
+    # 风险收益指标（优先取 1 年期，其次成立以来）
+    def _val(risk_obj, field_1y, field_since):
+        if not risk_obj:
+            return None
+        v = getattr(risk_obj, field_1y, None)
+        if v is None:
+            v = getattr(risk_obj, field_since, None)
+        return v
+
+    indicators = {}
+    if risk:
+        indicators = {
+            'annual_yield': _val(risk, 'annual_yield_1y', 'annual_yield_since'),
+            'annual_volatility': _val(risk, 'annual_volatility_1y', 'annual_volatility_since'),
+            'max_drawdown': _val(risk, 'max_drawdown_1y', 'max_drawdown_since'),
+            'sharpe_ratio': _val(risk, 'sharpe_ratio_1y', 'sharpe_ratio_since'),
+            'kama_ratio': _val(risk, 'kama_ratio_1y', 'kama_ratio_since'),
+            'info_ratio': _val(risk, 'info_ratio_1y', 'info_ratio_since'),
+            'alpha': _val(risk, 'alpha_1y', 'alpha_since'),
+            'beta': _val(risk, 'beta_1y', 'beta_since'),
+        }
+
+    # 净值序列：从 perf_net_values 查询，按日期升序
+    nav_qs = PerfNetValues.objects.filter(pid=pid_int, trade_date__isnull=False).order_by('trade_date')
+    nav_series = []
+    prev_nv = None
+    peak = None  # 用于计算回撤
+    for n in nav_qs:
+        nv = n.net_value
+        if nv is None:
+            continue
+        # 累计收益率（基于首日净值）
+        if prev_nv is None:
+            cum_ret = 0.0
+            base_nv = nv
+        else:
+            cum_ret = (nv / base_nv - 1) if base_nv else 0.0
+        # 回撤
+        if peak is None or nv > peak:
+            peak = nv
+        drawdown = (nv / peak - 1) if peak else 0.0
+        nav_series.append({
+            'date': n.trade_date.isoformat() if n.trade_date else None,
+            'nav': nv,
+            'cum_return': round(cum_ret * 100, 4),
+            'drawdown': round(drawdown * 100, 4),
+        })
+        prev_nv = nv
+
+    return Response({
+        'info': info,
+        'indicators': indicators,
+        'nav_series': nav_series,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def table_template(request, key):
     """下载指定表的导入模板(.xlsx)。
 

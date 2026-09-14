@@ -15,6 +15,22 @@
         <RefreshCw :size="16" :stroke-width="1.75" />
       </button>
 
+      <!-- 前台/后台切换 -->
+      <div class="flex items-center gap-1 bg-canvasDark rounded p-0.5">
+        <router-link
+          to="/display/overview"
+          class="px-2.5 py-1 rounded text-xs font-medium transition-colors text-ink-muted hover:text-ink"
+        >
+          前台分析
+        </router-link>
+        <router-link
+          to="/admin"
+          class="px-2.5 py-1 rounded text-xs font-medium transition-colors bg-panel text-ink shadow-card"
+        >
+          后台管理
+        </router-link>
+      </div>
+
       <div class="relative" ref="menuRef">
         <button
           class="flex items-center gap-2 px-2.5 py-1.5 rounded text-sm text-ink-muted hover:bg-canvasDark transition-colors"
