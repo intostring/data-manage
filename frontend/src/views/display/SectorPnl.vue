@@ -42,7 +42,7 @@
             <strong>{{ fmtMoney(latestPoint?.cumulative_pnl) }}</strong>
             <span>{{ firstDate }} 至 {{ latestDate }}</span>
           </div>
-          <svg viewBox="0 0 1000 280" preserveAspectRatio="none" class="sector-svg">
+          <svg viewBox="0 0 1000 372" preserveAspectRatio="none" class="sector-svg">
             <defs>
               <linearGradient id="sectorPnlFill" x1="0" x2="0" y1="0" y2="1">
                 <stop offset="0%" stop-color="#B03A2E" stop-opacity="0.22" />
@@ -59,12 +59,53 @@
             </g>
             <path v-if="areaPath" :d="areaPath" class="sector-area" />
             <path v-if="linePath" :d="linePath" class="sector-line" />
+            <g class="sector-legend" @mousemove.stop>
+              <g class="sector-legend-item" :class="{ off: !showPosition }" @click="showPosition = !showPosition">
+                <rect x="56" y="228" width="10" height="10" class="sector-legend-total" />
+                <text x="70" y="237" class="sector-bar-title">持仓金额</text>
+              </g>
+              <g class="sector-legend-item" :class="{ off: !showNet }" @click="showNet = !showNet">
+                <rect x="150" y="228" width="5" height="10" class="sector-legend-net-pos" />
+                <rect x="156" y="228" width="5" height="10" class="sector-legend-net-neg" />
+                <text x="166" y="237" class="sector-bar-title">单边敞口（轧差）</text>
+              </g>
+            </g>
+            <g class="sector-grid">
+              <line v-for="tick in barTicks" :key="`bar-${tick.y}`" x1="56" x2="980" :y1="tick.y" :y2="tick.y" />
+            </g>
+            <g class="sector-axis-labels">
+              <text v-for="tick in barTicks" :key="`barl-${tick.y}`" x="48" :y="tick.y + 4" text-anchor="end">
+                {{ tick.label }}
+              </text>
+            </g>
+            <g v-if="showPosition" class="sector-bars">
+              <rect
+                v-for="point in barPoints"
+                :key="`bar-${point.date}`"
+                :x="point.x - barWidth"
+                :y="point.barY"
+                :width="barWidth"
+                :height="barZero - point.barY"
+              />
+            </g>
+            <g v-if="showNet" class="sector-net-bars">
+              <rect
+                v-for="point in netBarPoints"
+                :key="`net-${point.date}`"
+                :x="point.x"
+                :y="point.barY"
+                :width="barWidth"
+                :height="point.barH"
+                :class="point.up ? 'pos' : 'neg'"
+              />
+            </g>
+            <line x1="56" x2="980" :y1="barZero" :y2="barZero" class="sector-bar-zero" />
             <g v-if="hoverPoint" class="sector-hover">
-              <line :x1="hoverPoint.x" :x2="hoverPoint.x" y1="18" y2="244" />
+              <line :x1="hoverPoint.x" :x2="hoverPoint.x" y1="18" y2="340" />
               <circle :cx="hoverPoint.x" :cy="hoverPoint.y" r="4.5" />
             </g>
-            <text x="56" y="270" class="sector-x-label">{{ firstDate }}</text>
-            <text x="980" y="270" text-anchor="end" class="sector-x-label">{{ latestDate }}</text>
+            <text x="56" y="364" class="sector-x-label">{{ firstDate }}</text>
+            <text x="980" y="364" text-anchor="end" class="sector-x-label">{{ latestDate }}</text>
           </svg>
           <div
             v-if="hoverPoint"
@@ -74,11 +115,9 @@
             <b>{{ hoverPoint.date }}</b>
             <span>累计盈亏 <em :class="hoverPoint.cumulative_pnl >= 0 ? 'd-up' : 'd-dn'">{{ fmtMoney(hoverPoint.cumulative_pnl) }}</em></span>
             <span>当日盈亏 <em :class="hoverPoint.daily_pnl >= 0 ? 'd-up' : 'd-dn'">{{ fmtMoney(hoverPoint.daily_pnl) }}</em></span>
+            <span v-if="showPosition">持仓金额 <em>{{ fmtMoney(hoverPoint.position_value) }}</em></span>
+            <span v-if="showNet">单边敞口 <em :class="hoverPoint.net_position_value >= 0 ? 'd-up' : 'd-dn'">{{ fmtMoney(hoverPoint.net_position_value) }}</em></span>
             <span>投顾数量 <em>{{ hoverPoint.advisor_count || 0 }}</em></span>
-          </div>
-          <div class="sector-chart-foot">
-            <span>最早交易日：{{ firstDate }}</span>
-            <span>最新交易日：{{ latestDate }}</span>
           </div>
         </div>
         <div v-else class="sector-empty-chart">
@@ -142,6 +181,8 @@
               <td>{{ row.symbol_name || '—' }}</td>
               <td class="d-mono">{{ fmtMoney(row.profit_loss) }}</td>
               <td class="d-mono">{{ fmtMoney(row.trade_amount) }}</td>
+              <td class="d-mono">{{ fmtPct(row.total_ratio) }}</td>
+              <td class="d-mono">{{ fmtPct(row.profit_ratio) }}</td>
               <td class="d-mono">{{ fmtNumber(row.avg_daily_volume) }}</td>
               <td class="d-mono">{{ fmtMoney(row.avg_daily_amount) }}</td>
               <td class="d-mono">{{ fmtPct(row.intraday_trade_ratio) }}</td>
@@ -209,6 +250,8 @@ const latestDate = ref('')
 const loading = ref(false)
 const hoverIndex = ref(null)
 const onlyHolding = ref(false)
+const showPosition = ref(true)
+const showNet = ref(true)
 const selectedWindow = ref('std')
 const selectedVariety = ref(route.query.variety || 'LH')
 const selectedVarietyName = ref('生猪')
@@ -236,18 +279,32 @@ const windowOptions = [
 
 const chartBox = {
   width: 1000,
-  height: 280,
   left: 56,
   right: 980,
   top: 18,
-  bottom: 244,
+  bottom: 218,
 }
+
+const barBox = {
+  top: 244,
+  bottom: 340,
+}
+
+// 存在负敞口时零轴居中（正负各半空间），否则零轴贴底（全部空间给正值）
+const hasNegativeNet = computed(() =>
+  showNet.value && chartRows.value.some((row) => Number(row.net_position_value || 0) < 0),
+)
+const barZero = computed(() =>
+  hasNegativeNet.value ? Math.round((barBox.top + barBox.bottom) / 2) : barBox.bottom,
+)
 
 const columns = [
   { key: 'advisor_name', label: '投顾名称' },
   { key: 'symbol_name', label: '品种简称' },
   { key: 'profit_loss', label: '盈亏金额' },
   { key: 'trade_amount', label: '成交额' },
+  { key: 'total_ratio', label: '占总交易比例' },
+  { key: 'profit_ratio', label: '占投顾总盈利比例' },
   { key: 'avg_daily_volume', label: '日均成交量' },
   { key: 'avg_daily_amount', label: '日均成交额' },
   { key: 'intraday_trade_ratio', label: '日内交易占比' },
@@ -348,6 +405,53 @@ const yTicks = computed(() => {
   return ticks.reverse()
 })
 
+const barMax = computed(() => {
+  const values = [1]
+  if (showPosition.value) {
+    values.push(...chartRows.value.map((row) => Number(row.position_value || 0)))
+  }
+  if (showNet.value) {
+    values.push(...chartRows.value.map((row) => Math.abs(Number(row.net_position_value || 0))))
+  }
+  return Math.max(...values)
+})
+
+const barTicks = computed(() => {
+  const span = barZero.value - barBox.top
+  return [0, 0.5, 1].map((ratio) => ({
+    y: barZero.value - span * ratio,
+    label: fmtMoney(barMax.value * ratio),
+  }))
+})
+
+const barPoints = computed(() =>
+  chartPoints.value
+    .filter((point) => Number(point.position_value || 0) > 0)
+    .map((point) => ({
+      date: point.date,
+      x: point.x,
+      barY: barValueToY(point.position_value),
+    })),
+)
+
+const netBarPoints = computed(() =>
+  chartPoints.value
+    .filter((point) => Number(point.net_position_value || 0) !== 0)
+    .map((point) => {
+      const value = Number(point.net_position_value || 0)
+      const magnitudeY = barValueToY(Math.abs(value))
+      if (value > 0) {
+        return { date: point.date, x: point.x, barY: magnitudeY, barH: barZero.value - magnitudeY, up: true }
+      }
+      const height = Math.min(barZero.value - magnitudeY, barBox.bottom - barZero.value)
+      return { date: point.date, x: point.x, barY: barZero.value, barH: height, up: false }
+    }),
+)
+
+const barWidth = computed(() =>
+  Math.max(Math.min(((chartBox.right - chartBox.left) / Math.max(chartPoints.value.length, 1)) * 0.32, 8), 1.2),
+)
+
 const hoverPoint = computed(() => {
   if (hoverIndex.value == null) return null
   const point = chartPoints.value[hoverIndex.value]
@@ -361,6 +465,11 @@ function valueToY(value) {
   const spanY = chartBox.bottom - chartBox.top
   const { min, max } = yDomain.value
   return chartBox.bottom - ((Number(value || 0) - min) / (max - min)) * spanY
+}
+
+function barValueToY(value) {
+  const spanY = barZero.value - barBox.top
+  return barZero.value - (Number(value || 0) / barMax.value) * spanY
 }
 
 function onChartMove(event) {
@@ -486,6 +595,7 @@ watch(totalPages, (total) => {
 <style scoped>
 .sector-pnl-page {
   max-width: 1280px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -517,9 +627,62 @@ watch(totalPages, (total) => {
 
 .sector-svg {
   width: 100%;
-  height: 280px;
+  height: 372px;
   display: block;
   overflow: visible;
+}
+
+.sector-bar-title {
+  fill: var(--muted);
+  font-size: 11px;
+  font-family: var(--sans);
+}
+
+.sector-legend-item {
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.sector-legend-item.off {
+  opacity: 0.35;
+}
+
+.sector-legend-total {
+  fill: rgba(156, 107, 47, 0.55);
+}
+
+.sector-legend-net-pos {
+  fill: rgba(176, 58, 46, 0.75);
+}
+
+.sector-legend-net-neg {
+  fill: rgba(23, 113, 75, 0.75);
+}
+
+.sector-bars rect {
+  fill: rgba(156, 107, 47, 0.55);
+}
+
+.sector-bars rect:hover {
+  fill: rgba(156, 107, 47, 0.8);
+}
+
+.sector-net-bars rect.pos {
+  fill: rgba(176, 58, 46, 0.75);
+}
+
+.sector-net-bars rect.neg {
+  fill: rgba(23, 113, 75, 0.75);
+}
+
+.sector-net-bars rect:hover {
+  opacity: 0.85;
+}
+
+.sector-bar-zero {
+  stroke: rgba(18, 36, 56, 0.3);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
 }
 
 .sector-grid line {
@@ -589,18 +752,6 @@ watch(totalPages, (total) => {
   font-style: normal;
   color: #fff;
   font-family: var(--mono);
-}
-
-.sector-chart-foot {
-  display: flex;
-  justify-content: space-between;
-  padding-left: 56px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.sector-chart-foot span:last-child {
-  text-align: right;
 }
 
 .sector-card-actions {

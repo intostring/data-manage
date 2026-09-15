@@ -170,7 +170,7 @@ const modules = [
     icon: Layers,
     children: [
       { name: 'display-sector-pnl', label: '品种盈亏', path: '/display/sector/pnl' },
-      { name: 'display-sector-advisor-variety', label: '投顾品种明细', path: '/display/sector/advisor-variety' },
+      { name: 'display-sector-advisor-variety', label: '品种投顾明细', path: '/display/sector/advisor-variety' },
       { name: 'display-sector-contract-kline', label: '合约K线', path: '/display/sector/contract-kline' },
     ],
   },
@@ -185,7 +185,7 @@ const titleMap = {
   'display-advisor': '投顾业绩',
   'display-sector': '品种板块',
   'display-sector-pnl': '品种盈亏',
-  'display-sector-advisor-variety': '投顾品种明细',
+  'display-sector-advisor-variety': '品种投顾明细',
   'display-sector-contract-kline': '合约K线',
   'display-position': '持仓分析',
   'display-trade': '交易分析',

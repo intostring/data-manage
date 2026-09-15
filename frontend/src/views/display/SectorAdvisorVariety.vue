@@ -9,8 +9,8 @@
           </span>
         </div>
         <div class="av-query">
-          <input v-model="queryAccount" class="d-ipt" placeholder="投顾代码" />
-          <input v-model="queryVariety" class="d-ipt" placeholder="品种代码或简称" />
+          <input v-model="queryAccount" class="d-ipt" placeholder="投顾代码/名称" />
+          <input v-model="queryVariety" class="d-ipt" placeholder="品种代码/简称" />
           <button type="button" class="d-btn" @click="applyQuery">查询</button>
         </div>
       </div>
@@ -26,7 +26,7 @@
             <strong>{{ fmtMoney(latestPoint?.cumulative_pnl) }}</strong>
             <span>{{ firstDate }} 至 {{ latestDate }}</span>
           </div>
-          <svg viewBox="0 0 1000 280" preserveAspectRatio="none" class="av-svg">
+          <svg viewBox="0 0 1000 372" preserveAspectRatio="none" class="av-svg">
             <defs>
               <linearGradient id="advisorVarietyFill" x1="0" x2="0" y1="0" y2="1">
                 <stop offset="0%" stop-color="#B03A2E" stop-opacity="0.22" />
@@ -43,12 +43,53 @@
             </g>
             <path v-if="areaPath" :d="areaPath" class="av-area" />
             <path v-if="linePath" :d="linePath" class="av-line" />
+            <g class="av-legend" @mousemove.stop>
+              <g class="av-legend-item" :class="{ off: !showPosition }" @click="showPosition = !showPosition">
+                <rect x="56" y="228" width="10" height="10" class="av-legend-total" />
+                <text x="70" y="237" class="av-bar-title">持仓金额</text>
+              </g>
+              <g class="av-legend-item" :class="{ off: !showNet }" @click="showNet = !showNet">
+                <rect x="150" y="228" width="5" height="10" class="av-legend-net-pos" />
+                <rect x="156" y="228" width="5" height="10" class="av-legend-net-neg" />
+                <text x="166" y="237" class="av-bar-title">单边敞口（轧差）</text>
+              </g>
+            </g>
+            <g class="av-grid">
+              <line v-for="tick in barTicks" :key="`bar-${tick.y}`" x1="56" x2="980" :y1="tick.y" :y2="tick.y" />
+            </g>
+            <g class="av-axis-labels">
+              <text v-for="tick in barTicks" :key="`barl-${tick.y}`" x="48" :y="tick.y + 4" text-anchor="end">
+                {{ tick.label }}
+              </text>
+            </g>
+            <g v-if="showPosition" class="av-bars">
+              <rect
+                v-for="point in barPoints"
+                :key="`bar-${point.date}`"
+                :x="point.x - barWidth"
+                :y="point.barY"
+                :width="barWidth"
+                :height="barZero - point.barY"
+              />
+            </g>
+            <g v-if="showNet" class="av-net-bars">
+              <rect
+                v-for="point in netBarPoints"
+                :key="`net-${point.date}`"
+                :x="point.x"
+                :y="point.barY"
+                :width="barWidth"
+                :height="point.barH"
+                :class="point.up ? 'pos' : 'neg'"
+              />
+            </g>
+            <line x1="56" x2="980" :y1="barZero" :y2="barZero" class="av-bar-zero" />
             <g v-if="hoverPoint" class="av-hover">
-              <line :x1="hoverPoint.x" :x2="hoverPoint.x" y1="18" y2="244" />
+              <line :x1="hoverPoint.x" :x2="hoverPoint.x" y1="18" y2="340" />
               <circle :cx="hoverPoint.x" :cy="hoverPoint.y" r="4.5" />
             </g>
-            <text x="56" y="270" class="av-x-label">{{ firstDate }}</text>
-            <text x="980" y="270" text-anchor="end" class="av-x-label">{{ latestDate }}</text>
+            <text x="56" y="364" class="av-x-label">{{ firstDate }}</text>
+            <text x="980" y="364" text-anchor="end" class="av-x-label">{{ latestDate }}</text>
           </svg>
           <div
             v-if="hoverPoint"
@@ -58,6 +99,8 @@
             <b>{{ hoverPoint.date }}</b>
             <span>累计盈亏 <em :class="hoverPoint.cumulative_pnl >= 0 ? 'd-up' : 'd-dn'">{{ fmtMoney(hoverPoint.cumulative_pnl) }}</em></span>
             <span>当日盈亏 <em :class="hoverPoint.daily_pnl >= 0 ? 'd-up' : 'd-dn'">{{ fmtMoney(hoverPoint.daily_pnl) }}</em></span>
+            <span v-if="showPosition">持仓金额 <em>{{ fmtMoney(hoverPoint.position_value) }}</em></span>
+            <span v-if="showNet">单边敞口 <em :class="hoverPoint.net_position_value >= 0 ? 'd-up' : 'd-dn'">{{ fmtMoney(hoverPoint.net_position_value) }}</em></span>
           </div>
         </div>
         <div v-else class="av-empty">暂无该投顾品种累计盈亏数据</div>
@@ -166,8 +209,19 @@ const tradePage = ref(Number(route.query.trade_page || 1))
 const tradePageSize = ref(Number(route.query.trade_page_size || 20))
 const tradeJumpPage = ref('')
 const hoverIndex = ref(null)
+const showPosition = ref(true)
+const showNet = ref(true)
 
-const chartBox = { width: 1000, left: 56, right: 980, top: 18, bottom: 244 }
+const chartBox = { width: 1000, left: 56, right: 980, top: 18, bottom: 218 }
+const barBox = { top: 244, bottom: 340 }
+
+// 存在负敞口时零轴居中（正负各半空间），否则零轴贴底（全部空间给正值）
+const hasNegativeNet = computed(() =>
+  showNet.value && chartRows.value.some((row) => Number(row.net_position_value || 0) < 0),
+)
+const barZero = computed(() =>
+  hasNegativeNet.value ? Math.round((barBox.top + barBox.bottom) / 2) : barBox.bottom,
+)
 const tradeColumns = [
   { key: 'trade_date', label: '成交日期' },
   { key: 'trade_time', label: '成交时间' },
@@ -232,6 +286,53 @@ const yTicks = computed(() => {
   }
   return ticks.reverse()
 })
+
+const barMax = computed(() => {
+  const values = [1]
+  if (showPosition.value) {
+    values.push(...chartRows.value.map((row) => Number(row.position_value || 0)))
+  }
+  if (showNet.value) {
+    values.push(...chartRows.value.map((row) => Math.abs(Number(row.net_position_value || 0))))
+  }
+  return Math.max(...values)
+})
+
+const barTicks = computed(() => {
+  const span = barZero.value - barBox.top
+  return [0, 0.5, 1].map((ratio) => ({
+    y: barZero.value - span * ratio,
+    label: fmtMoney(barMax.value * ratio),
+  }))
+})
+
+const barPoints = computed(() =>
+  chartPoints.value
+    .filter((point) => Number(point.position_value || 0) > 0)
+    .map((point) => ({
+      date: point.date,
+      x: point.x,
+      barY: barValueToY(point.position_value),
+    })),
+)
+
+const netBarPoints = computed(() =>
+  chartPoints.value
+    .filter((point) => Number(point.net_position_value || 0) !== 0)
+    .map((point) => {
+      const value = Number(point.net_position_value || 0)
+      const magnitudeY = barValueToY(Math.abs(value))
+      if (value > 0) {
+        return { date: point.date, x: point.x, barY: magnitudeY, barH: barZero.value - magnitudeY, up: true }
+      }
+      const height = Math.min(barZero.value - magnitudeY, barBox.bottom - barZero.value)
+      return { date: point.date, x: point.x, barY: barZero.value, barH: height, up: false }
+    }),
+)
+
+const barWidth = computed(() =>
+  Math.max(Math.min(((chartBox.right - chartBox.left) / Math.max(chartPoints.value.length, 1)) * 0.32, 8), 1.2),
+)
 const hoverPoint = computed(() => {
   if (hoverIndex.value == null) return null
   const point = chartPoints.value[hoverIndex.value]
@@ -246,6 +347,11 @@ const hoverPoint = computed(() => {
 function valueToY(value) {
   const { min, max } = yDomain.value
   return chartBox.bottom - ((Number(value || 0) - min) / (max - min)) * (chartBox.bottom - chartBox.top)
+}
+
+function barValueToY(value) {
+  const spanY = barZero.value - barBox.top
+  return barZero.value - (Number(value || 0) / barMax.value) * spanY
 }
 
 function onChartMove(event) {
@@ -338,6 +444,7 @@ onMounted(() => {
 <style scoped>
 .advisor-variety-page {
   max-width: 1280px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -383,9 +490,62 @@ onMounted(() => {
 
 .av-svg {
   width: 100%;
-  height: 280px;
+  height: 372px;
   display: block;
   overflow: visible;
+}
+
+.av-bar-title {
+  fill: var(--muted);
+  font-size: 11px;
+  font-family: var(--sans);
+}
+
+.av-legend-item {
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.av-legend-item.off {
+  opacity: 0.35;
+}
+
+.av-legend-total {
+  fill: rgba(156, 107, 47, 0.55);
+}
+
+.av-legend-net-pos {
+  fill: rgba(176, 58, 46, 0.75);
+}
+
+.av-legend-net-neg {
+  fill: rgba(23, 113, 75, 0.75);
+}
+
+.av-bars rect {
+  fill: rgba(156, 107, 47, 0.55);
+}
+
+.av-bars rect:hover {
+  fill: rgba(156, 107, 47, 0.8);
+}
+
+.av-net-bars rect.pos {
+  fill: rgba(176, 58, 46, 0.75);
+}
+
+.av-net-bars rect.neg {
+  fill: rgba(23, 113, 75, 0.75);
+}
+
+.av-net-bars rect:hover {
+  opacity: 0.85;
+}
+
+.av-bar-zero {
+  stroke: rgba(18, 36, 56, 0.3);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
 }
 
 .av-grid line {

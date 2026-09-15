@@ -4,7 +4,7 @@
       <div class="d-card-h">
         <div>
           <span class="d-card-t">合约K线图</span>
-          <span class="d-card-x" style="margin-left:10px">{{ advisorLabel }} · {{ tsCode }} · {{ selectedWindowLabel }}</span>
+          <span class="d-card-x" style="margin-left:10px"><em class="ck-hl">{{ advisorLabel }}</em> · <em class="ck-hl">{{ tsCode }}</em> · {{ selectedWindowLabel }}</span>
         </div>
         <div class="ck-head-actions">
           <div class="ck-periods">
@@ -39,10 +39,6 @@
           @mousemove="onChartMove"
           @mouseleave="hoverIndex = null"
         >
-          <div class="ck-meta">
-            <strong>{{ fmtNumber(latestPoint?.close) }}</strong>
-            <span>{{ firstDate }} 至 {{ lastDate }} · {{ rows.length }} 根K线</span>
-          </div>
           <svg viewBox="0 0 1000 420" preserveAspectRatio="none" class="ck-svg">
             <g class="ck-grid">
               <line v-for="tick in priceTicks" :key="tick.y" x1="58" x2="980" :y1="tick.y" :y2="tick.y" />
@@ -82,8 +78,11 @@
                 class="ck-marker"
                 :transform="`translate(${marker.x}, ${marker.y})`"
               >
-                <circle r="6" :class="marker.sideClass" />
-                <text y="-9" text-anchor="middle">{{ marker.label }}</text>
+                <polygon
+                  :points="marker.sideClass === 'buy' ? '0,-7 6,4 -6,4' : '0,7 6,-4 -6,-4'"
+                  :class="marker.sideClass"
+                />
+                <text :y="marker.sideClass === 'buy' ? 17 : -9" text-anchor="middle">{{ marker.label }}</text>
                 <title>{{ marker.title }}</title>
               </g>
             </g>
@@ -165,7 +164,7 @@
               <td class="d-mono">{{ fmtMoney(row.trade_amount) }}</td>
               <td class="d-mono">{{ fmtMoney(row.fee) }}</td>
               <td class="d-mono">{{ fmtMoney(row.close_profit) }}</td>
-              <td class="d-mono">{{ fmtMoney(row.daily_position_profit) }}</td>
+              <td class="d-mono">{{ fmtMoney(row.daily_close_profit) }}</td>
             </tr>
           </tbody>
           <tbody v-else>
@@ -217,7 +216,7 @@ const router = useRouter()
 const loading = ref(false)
 const contract = ref(route.query.contract || 'lh2611')
 const account = ref(route.query.account || '250528_HG')
-const selectedWindow = ref(route.query.window || '6m')
+const selectedWindow = ref(route.query.window || '3m')
 const queryContract = ref(contract.value)
 const queryAccount = ref(account.value)
 const tsCode = ref(contract.value.toUpperCase())
@@ -225,8 +224,8 @@ const advisorLabel = ref(account.value)
 const latestDate = ref('')
 const allRows = ref([])
 const markerRows = ref([])
-const positionRows = ref([])
-const positionCount = ref(0)
+const tradeRows = ref([])
+const tradeCount = ref(0)
 const tradePage = ref(Number(route.query.trade_page || 1))
 const tradePageSize = ref(Number(route.query.trade_page_size || 20))
 const tradeJumpPage = ref('')
@@ -249,33 +248,29 @@ const windowOptions = [
   { key: 'all', label: '全部' },
   { key: 'custom', label: '自定义' },
 ]
-const positionColumns = [
-  { key: 'trade_date', label: '持仓日期' },
+const tradeColumns = [
+  { key: 'trade_date', label: '成交日期' },
+  { key: 'trade_time', label: '成交时间' },
   { key: 'advisor_name', label: '投顾名称' },
-  { key: 'contract', label: '合约' },
   { key: 'side', label: '买卖' },
-  { key: 'hedge_flag', label: '投保' },
-  { key: 'position_qty', label: '持仓量' },
-  { key: 'open_date', label: '开仓日期' },
-  { key: 'open_time', label: '开仓时间' },
-  { key: 'open_price', label: '开仓价' },
-  { key: 'settlement_price', label: '结算价' },
-  { key: 'margin', label: '保证金' },
-  { key: 'market_value', label: '持仓市值' },
-  { key: 'daily_position_profit', label: '逐日持盈' },
-  { key: 'position_profit', label: '逐笔持盈' },
+  { key: 'open_close', label: '开平' },
+  { key: 'trade_price', label: '成交价' },
+  { key: 'trade_qty', label: '手数' },
+  { key: 'trade_amount', label: '成交额' },
+  { key: 'fee', label: '手续费' },
+  { key: 'close_profit', label: '平仓盈亏' },
+  { key: 'daily_close_profit', label: '逐日平仓盈亏' },
 ]
 const firstDate = computed(() => rows.value[0]?.date || '')
 const lastDate = computed(() => rows.value[rows.value.length - 1]?.date || '')
-const latestPoint = computed(() => rows.value[rows.value.length - 1] || null)
 const selectedWindowLabel = computed(() =>
   selectedWindow.value === 'custom'
     ? `${customStartDate.value} 至 ${customEndDate.value}`
-    : windowOptions.find((item) => item.key === selectedWindow.value)?.label || '近6月'
+    : windowOptions.find((item) => item.key === selectedWindow.value)?.label || '近3月'
 )
-const totalPositionPages = computed(() => Math.max(Math.ceil(positionCount.value / tradePageSize.value), 1))
+const totalTradePages = computed(() => Math.max(Math.ceil(tradeCount.value / tradePageSize.value), 1))
 const tradePageNumbers = computed(() => {
-  const total = totalPositionPages.value
+  const total = totalTradePages.value
   const current = tradePage.value
   const start = Math.max(1, Math.min(current - 2, total - 4))
   const end = Math.min(total, start + 4)
@@ -335,23 +330,27 @@ const candles = computed(() => {
 
 const tradeMarkers = computed(() => {
   const candleByDate = new Map(candles.value.map((candle) => [candle.date, candle]))
-  const groupIndexByDate = new Map()
+  const sideIndexByDate = new Map()
   return markerRows.value
     .map((row) => {
       const candle = candleByDate.get(row.date)
       if (!candle) return null
-      const used = groupIndexByDate.get(row.date) || 0
-      groupIndexByDate.set(row.date, used + 1)
-      const price = Number(row.avg_price || candle.close || 0)
-      const offset = (used % 2 === 0 ? -1 : 1) * (8 + Math.floor(used / 2) * 12)
       const side = row.side || '—'
       const openClose = row.open_close || '—'
+      const isBuy = isBuySide(side)
+      const key = `${row.date}|${isBuy ? 'buy' : 'sell'}`
+      const used = sideIndexByDate.get(key) || 0
+      sideIndexByDate.set(key, used + 1)
+      const offset = 14 + used * 14
+      const y = isBuy
+        ? Math.min(candle.lowY + offset, box.priceBottom - 12)
+        : Math.max(candle.highY - offset, box.top + 12)
       return {
         ...row,
         x: candle.x,
-        y: Math.min(Math.max(priceY(price) + offset, box.top + 12), box.priceBottom - 12),
-        label: `${side}${openClose}`.slice(0, 4),
-        sideClass: isBuySide(side) ? 'buy' : 'sell',
+        y,
+        label: `${side}${openClose} ${fmtNumber(row.trade_qty)}手`,
+        sideClass: isBuy ? 'buy' : 'sell',
         title: `${row.date} ${side}${openClose} · ${row.trade_count || 0}笔 · ${fmtNumber(row.trade_qty)}手 · 均价${fmtNumber(row.avg_price)}`,
       }
     })
@@ -468,7 +467,7 @@ function applyCustomWindow() {
 }
 
 function changeTradePage(page) {
-  tradePage.value = Math.min(Math.max(page, 1), totalPositionPages.value)
+  tradePage.value = Math.min(Math.max(page, 1), totalTradePages.value)
   loadData()
 }
 
@@ -498,16 +497,16 @@ async function loadData() {
     allRows.value = data.rows || []
     resetSlider(allRows.value)
     markerRows.value = data.marker_rows || []
-    positionRows.value = data.position_rows || []
-    positionCount.value = data.position_count || 0
-    advisorLabel.value = positionRows.value[0] ? formatAdvisor(positionRows.value[0]) : (account.value || data.account || '—')
+    tradeRows.value = data.trade_rows || []
+    tradeCount.value = data.trade_count || 0
+    advisorLabel.value = tradeRows.value[0] ? formatAdvisor(tradeRows.value[0]) : (account.value || data.account || '—')
   } catch (error) {
     console.error('获取合约K线失败', error)
     allRows.value = []
     resetSlider([])
     markerRows.value = []
-    positionRows.value = []
-    positionCount.value = 0
+    tradeRows.value = []
+    tradeCount.value = 0
     latestDate.value = ''
   } finally {
     loading.value = false
@@ -517,7 +516,7 @@ async function loadData() {
 watch(() => [route.query.contract, route.query.account, route.query.window, route.query.start_date, route.query.end_date], ([nextContract, nextAccount, nextWindow, nextStart, nextEnd]) => {
   contract.value = nextContract || 'lh2611'
   account.value = nextAccount || '250528_HG'
-  selectedWindow.value = nextWindow || '6m'
+  selectedWindow.value = nextWindow || '3m'
   if (nextStart) customStartDate.value = nextStart
   if (nextEnd) customEndDate.value = nextEnd
   queryContract.value = contract.value
@@ -532,6 +531,7 @@ watch(() => [route.query.contract, route.query.account, route.query.window, rout
 <style scoped>
 .contract-kline-page {
   max-width: 1280px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -624,25 +624,17 @@ watch(() => [route.query.contract, route.query.account, route.query.window, rout
   color: var(--brass);
 }
 
+.ck-hl {
+  font-style: normal;
+  color: var(--brass);
+  font-weight: 600;
+}
+
 .ck-chart {
   position: relative;
   min-height: 460px;
 }
 
-.ck-meta {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin: 0 0 6px 58px;
-}
-
-.ck-meta strong {
-  font-family: var(--mono);
-  color: var(--ink);
-  font-size: 20px;
-}
-
-.ck-meta span,
 .ck-x-label,
 .ck-axis-labels text {
   fill: var(--muted);
@@ -769,18 +761,18 @@ watch(() => [route.query.contract, route.query.account, route.query.window, rout
   fill: rgba(23, 113, 75, 0.22);
 }
 
-.ck-marker circle {
+.ck-marker polygon {
   stroke: #FBF9F3;
-  stroke-width: 2;
+  stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
 }
 
-.ck-marker circle.buy {
-  fill: #B03A2E;
+.ck-marker polygon.buy {
+  fill: #F0B429;
 }
 
-.ck-marker circle.sell {
-  fill: #17714B;
+.ck-marker polygon.sell {
+  fill: #7CC5A0;
 }
 
 .ck-marker text {

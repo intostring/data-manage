@@ -1,5 +1,5 @@
 <template>
-  <div class="max-w-6xl">
+  <div class="max-w-6xl mx-auto">
     <div class="mb-5">
       <h2 class="text-lg font-semibold text-ink">交易分析</h2>
       <p class="text-sm text-ink-muted mt-1">成交统计、换手率与多空敞口变化</p>

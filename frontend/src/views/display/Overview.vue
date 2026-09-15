@@ -1,5 +1,5 @@
 <template>
-  <div class="max-w-6xl">
+  <div class="max-w-6xl mx-auto">
     <div class="mb-5">
       <h2 class="text-lg font-semibold text-ink">总览</h2>
       <p class="text-sm text-ink-muted mt-1">组合净值、业绩指标与风险预警汇总</p>

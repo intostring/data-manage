@@ -1,5 +1,5 @@
 <template>
-  <div class="max-w-6xl">
+  <div class="max-w-6xl mx-auto">
     <div class="mb-5">
       <h2 class="text-lg font-semibold text-ink">品种板块</h2>
       <p class="text-sm text-ink-muted mt-1">品种表现、板块分布与投顾配置观察</p>

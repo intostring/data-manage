@@ -1,5 +1,5 @@
 <template>
-  <div class="max-w-6xl">
+  <div class="max-w-6xl mx-auto">
     <div class="mb-5">
       <h2 class="text-lg font-semibold text-ink">持仓分析</h2>
       <p class="text-sm text-ink-muted mt-1">品种分布、集中度与跨投顾持仓对比</p>

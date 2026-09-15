@@ -1,5 +1,5 @@
 <template>
-  <div class="max-w-6xl">
+  <div class="max-w-6xl mx-auto">
     <div class="mb-5">
       <h2 class="text-lg font-semibold text-ink">策略分析</h2>
       <p class="text-sm text-ink-muted mt-1">策略类型分布、相关性矩阵与风格归因</p>

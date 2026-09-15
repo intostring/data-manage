@@ -1,5 +1,5 @@
 <template>
-  <div class="max-w-6xl">
+  <div class="max-w-6xl mx-auto">
     <div class="mb-5">
       <h2 class="text-lg font-semibold text-ink">风险控制</h2>
       <p class="text-sm text-ink-muted mt-1">回撤、敞口、保证金率与预警事件跟踪</p>
