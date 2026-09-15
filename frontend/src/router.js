@@ -18,6 +18,7 @@ const routes = [
       { path: 'overview', name: 'display-overview', component: () => import('./views/display/Overview.vue') },
       { path: 'advisor', name: 'display-advisor', component: () => import('./views/display/AdvisorPerformance.vue') },
       { path: 'sector', name: 'display-sector', component: () => import('./views/display/SectorBoard.vue') },
+      { path: 'sector/analysis', name: 'display-sector-analysis', component: () => import('./views/display/SectorAnalysis.vue') },
       { path: 'sector/pnl', name: 'display-sector-pnl', component: () => import('./views/display/SectorPnl.vue') },
       { path: 'sector/advisor-variety', name: 'display-sector-advisor-variety', component: () => import('./views/display/SectorAdvisorVariety.vue') },
       { path: 'sector/contract-kline', name: 'display-sector-contract-kline', component: () => import('./views/display/ContractKline.vue') },

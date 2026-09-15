@@ -1133,6 +1133,315 @@ def sector_pnl(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def sector_bk_latest(request):
+    """板块分析首模块：yl_perf_bk 最新一期的资产/保证金/风险度快照。"""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT trade_date, asset_total, margin, pos_rate,
+                   variety_margin, variety_risk_degree, bk_margin, bk_risk_degree
+            FROM yl_perf_bk
+            WHERE trade_date = (SELECT MAX(trade_date) FROM yl_perf_bk)
+            LIMIT 1
+            """
+        )
+        row = cursor.fetchone()
+    if not row:
+        return Response({'detail': '暂无板块风险数据'}, status=404)
+    return Response({
+        'trade_date': row[0].isoformat() if row[0] else None,
+        'asset_total': float(row[1]),
+        'margin': float(row[2]),
+        'pos_rate': float(row[3]),
+        'variety_margin': float(row[4]),
+        'variety_risk_degree': float(row[5]),
+        'bk_margin': float(row[6]),
+        'bk_risk_degree': float(row[7]),
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sector_bk_margin(request):
+    """板块总保证金分布：总资产 = 闲置资金 + 保证金占用 + 各板块保证金。
+
+    rows 按金额降序：闲置资金(asset-margin)、yl_perf_bk_detail 中 level=1 的各板块 net_margin。
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT trade_date, asset_total, margin, bk_margin
+            FROM yl_perf_bk
+            WHERE trade_date = (SELECT MAX(trade_date) FROM yl_perf_bk)
+            LIMIT 1
+            """
+        )
+        row = cursor.fetchone()
+        if not row:
+            return Response({'detail': '暂无板块保证金数据'}, status=404)
+        trade_date, asset_total, margin, bk_margin = row[0], float(row[1]), float(row[2]), float(row[3])
+        cursor.execute(
+            """
+            SELECT code, buy_margin, sell_margin, risk_degree_10d, risk_degree_20d
+            FROM yl_perf_bk_detail
+            WHERE trade_date = (SELECT MAX(trade_date) FROM yl_perf_bk_detail)
+              AND level = 1
+            ORDER BY (COALESCE(buy_margin, 0) + COALESCE(sell_margin, 0)) DESC
+            """
+        )
+        sectors = [
+            {
+                'name': r[0],
+                'value': float(r[1] or 0) + float(r[2] or 0),
+                'risk_10d': float(r[3]) if r[3] is not None else None,
+                'risk_20d': float(r[4]) if r[4] is not None else None,
+            }
+            for r in cursor.fetchall()
+        ]
+    rows = []
+    idle = asset_total - margin
+    if idle > 0:
+        rows.append({'name': '闲置资金', 'value': idle, 'kind': 'idle'})
+    rows.extend({**item, 'kind': 'sector'} for item in sectors)
+    return Response({
+        'trade_date': trade_date.isoformat() if trade_date else None,
+        'asset_total': asset_total,
+        'margin': margin,
+        'bk_margin': bk_margin,
+        'rows': rows,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def variety_top_margin(request):
+    """品种保证金前30：yl_perf_bk_detail 中 level=2 的各品种，保证金按多空合计(buy+sell)降序取前30。
+
+    名称取自 fut_symbol_info（symbol_code 关联），未匹配到的回退显示代码。
+    rows 按金额降序返回，供条形图/饼图/转置表格使用。
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT trade_date, asset_total, margin
+            FROM yl_perf_bk
+            WHERE trade_date = (SELECT MAX(trade_date) FROM yl_perf_bk)
+            LIMIT 1
+            """
+        )
+        row = cursor.fetchone()
+        if not row:
+            return Response({'detail': '暂无品种保证金数据'}, status=404)
+        trade_date, asset_total, margin = row[0], float(row[1]), float(row[2])
+        cursor.execute(
+            """
+            SELECT d.code, d.buy_margin, d.sell_margin, COALESCE(s.symbol_name, d.code)
+            FROM yl_perf_bk_detail d
+            LEFT JOIN fut_symbol_info s ON s.symbol_code = d.code
+            WHERE d.trade_date = (SELECT MAX(trade_date) FROM yl_perf_bk_detail)
+              AND d.level = 2
+            ORDER BY (COALESCE(d.buy_margin, 0) + COALESCE(d.sell_margin, 0)) DESC
+            LIMIT 30
+            """
+        )
+        varieties = [
+            {'name': r[3], 'value': float(r[1] or 0) + float(r[2] or 0), 'kind': 'variety'}
+            for r in cursor.fetchall()
+        ]
+    return Response({
+        'trade_date': trade_date.isoformat() if trade_date else None,
+        'asset_total': asset_total,
+        'margin': margin,
+        'rows': varieties,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sector_board(request):
+    """板块分析：板块指数走势与 MOM 板块配置概览。
+
+    index_series: 各板块窗口内指数序列（降采样至500点内）。
+    sector_rows: 板块表现（最新指数/日涨跌/区间涨跌幅）+ MOM配置（盈亏/持仓/敞口/投顾数/品种数）。
+    """
+    window = request.query_params.get('window', '1y')
+    allowed_windows = {'1m', '3m', '6m', '1y', 'ytd', 'all', 'custom'}
+    if window not in allowed_windows:
+        return Response({'detail': 'window 参数无效'}, status=400)
+    is_custom = window == 'custom'
+    start_date = parse_date(request.query_params.get('start_date', '')) if is_custom else None
+    end_date = parse_date(request.query_params.get('end_date', '')) if is_custom else None
+    if is_custom and (not start_date or not end_date or start_date > end_date):
+        return Response({'detail': '自定义日期范围无效'}, status=400)
+
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT MAX(trade_date) FROM fut_sector_index')
+        latest_index_date = cursor.fetchone()[0]
+        if not latest_index_date:
+            return Response({'detail': '暂无板块指数数据'}, status=404)
+        win_end = min(end_date, latest_index_date) if is_custom else latest_index_date
+        if window == 'ytd':
+            win_start = win_end.replace(month=1, day=1)
+        elif window in {'1m', '3m', '6m', '1y'}:
+            days_map = {'1m': 31, '3m': 93, '6m': 186, '1y': 366}
+            win_start = win_end - timedelta(days=days_map[window])
+        elif is_custom:
+            win_start = start_date
+        else:
+            win_start = None
+
+        # 窗口内指数序列（按板块分组）
+        index_where = 'trade_date <= %s' + (' AND trade_date >= %s' if win_start else '')
+        index_params = [win_end] + ([win_start] if win_start else [])
+        cursor.execute(
+            f"""
+            SELECT sector_code, sector_name, trade_date, index_value
+            FROM fut_sector_index
+            WHERE {index_where}
+            ORDER BY sector_code, trade_date
+            """,
+            index_params,
+        )
+        series_by_code = {}
+        name_by_code = {}
+        for code, name, trade_date, value in cursor.fetchall():
+            series_by_code.setdefault(code, []).append((trade_date.isoformat(), float(value)))
+            name_by_code[code] = name
+
+        def downsample(points):
+            if len(points) <= 500:
+                return points
+            step = (len(points) - 1) / 499.0
+            keep = sorted({round(i * step) for i in range(500)} | {len(points) - 1})
+            return [points[i] for i in keep]
+
+        index_series = {
+            code: [{'date': d, 'value': v} for d, v in downsample(points)]
+            for code, points in series_by_code.items()
+        }
+
+        # 最新交易日的日涨跌幅
+        cursor.execute(
+            """
+            SELECT sector_code, index_value, daily_chg
+            FROM fut_sector_index
+            WHERE trade_date = %s
+            """,
+            [win_end],
+        )
+        latest_by_code = {row[0]: (float(row[1]), float(row[2]) if row[2] is not None else None) for row in cursor.fetchall()}
+
+        # 品种 -> 板块 映射（取 fut_market_stats 最新日期）
+        cursor.execute(
+            """
+            SELECT variety_code, variety_name, sector_code, sector_name
+            FROM fut_market_stats
+            WHERE trade_date = (SELECT MAX(trade_date) FROM fut_market_stats)
+            """
+        )
+        sector_by_code = {}
+        sector_by_name = {}
+        for variety_code, variety_name, sector_code, sector_name in cursor.fetchall():
+            sector_by_code[variety_code] = sector_code
+            sector_by_name[variety_name] = sector_code
+
+        # MOM 持仓/敞口/投顾数（持仓明细最新日期，按品种）
+        cursor.execute(
+            """
+            SELECT
+                p.variety,
+                SUM(COALESCE(p.more_market_value, 0) + COALESCE(p.empty_market_value, 0)),
+                SUM(COALESCE(p.more_market_value, 0) - COALESCE(p.empty_market_value, 0)),
+                COUNT(DISTINCT p.pid)
+            FROM perf_variety_position_detail p
+            WHERE p.trade_date = (SELECT MAX(trade_date) FROM perf_variety_position_detail)
+            GROUP BY p.variety
+            """
+        )
+        position_by_sector = {}
+        for variety_name, position_value, net_value, advisor_count in cursor.fetchall():
+            code = sector_by_name.get(variety_name)
+            if not code:
+                continue
+            agg = position_by_sector.setdefault(code, {'position_value': 0.0, 'net_value': 0.0, 'advisor_count': 0, 'variety_count': 0})
+            agg['position_value'] += float(position_value or 0)
+            agg['net_value'] += float(net_value or 0)
+            agg['advisor_count'] = max(agg['advisor_count'], int(advisor_count or 0))
+            agg['variety_count'] += 1
+
+        # MOM 区间累计盈亏（窗口末日 - 窗口内首个交易日，按品种）
+        pnl_by_sector = {}
+        cursor.execute(
+            """
+            SELECT MIN(trade_date), MAX(trade_date)
+            FROM yl_perf_variety_pnl_trend
+            WHERE calc_window = %s AND trade_date <= %s
+            """,
+            ['std', win_end],
+        )
+        trend_first, trend_last = cursor.fetchone()
+        if trend_first and trend_last:
+            trend_where = 'calc_window = %s AND trade_date <= %s'
+            trend_params = ['std', win_end]
+            if win_start:
+                trend_where += ' AND trade_date >= %s'
+                trend_params.append(win_start)
+            cursor.execute(
+                f'SELECT MIN(trade_date) FROM yl_perf_variety_pnl_trend WHERE {trend_where}',
+                trend_params,
+            )
+            win_first = cursor.fetchone()[0] or trend_first
+            cursor.execute(
+                """
+                SELECT variety_code, variety_name, trade_date, SUM(COALESCE(accum_pl_value, 0))
+                FROM yl_perf_variety_pnl_trend
+                WHERE calc_window = %s AND trade_date IN (%s, %s)
+                GROUP BY variety_code, variety_name, trade_date
+                """,
+                ['std', win_first, trend_last],
+            )
+            accum = {}
+            for variety_code, variety_name, trade_date, total in cursor.fetchall():
+                key = sector_by_code.get(variety_code) or sector_by_name.get(variety_name)
+                if not key:
+                    continue
+                accum.setdefault(key, {})[trade_date] = float(total or 0)
+            for code, by_date in accum.items():
+                if trend_last in by_date and win_first in by_date:
+                    pnl_by_sector[code] = by_date[trend_last] - by_date[win_first]
+
+        sector_rows = []
+        for code in sorted(name_by_code):
+            points = series_by_code.get(code) or []
+            latest_value, daily_chg = latest_by_code.get(code, (None, None))
+            period_chg = None
+            if len(points) >= 2 and points[0][1]:
+                period_chg = (points[-1][1] / points[0][1] - 1) * 100
+            mom = position_by_sector.get(code) or {}
+            sector_rows.append({
+                'sector_code': code,
+                'sector_name': name_by_code[code],
+                'latest_index': latest_value,
+                'daily_chg': daily_chg,
+                'period_chg': period_chg,
+                'mom_pnl': pnl_by_sector.get(code),
+                'mom_position_value': mom.get('position_value') or 0,
+                'mom_net_value': mom.get('net_value') or 0,
+                'mom_advisor_count': mom.get('advisor_count') or 0,
+                'mom_variety_count': mom.get('variety_count') or 0,
+            })
+
+    return Response({
+        'window': window,
+        'start_date': win_start.isoformat() if win_start else None,
+        'end_date': win_end.isoformat() if win_end else None,
+        'index_series': index_series,
+        'sector_rows': sector_rows,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def table_template(request, key):
     """下载指定表的导入模板(.xlsx)。
 
