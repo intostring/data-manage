@@ -1,6 +1,9 @@
-from django.db import models
+from datetime import timedelta
+
+from django.db import connection, models
 from django.db.models import Q
 from django.http import HttpResponse
+from django.utils.dateparse import parse_date
 from rest_framework import viewsets
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.filters import OrderingFilter
@@ -380,7 +383,7 @@ def advisor_performance(request):
     无参数：返回投顾产品列表 [{pid, product_name}]
     ?pid=xxx：返回单个投顾的基本信息 + 风险收益指标
     """
-    from .models import PerfProducts, PerfRiskIndicators, PerfNetValues, MomAccountRecord
+    from .models import PerfHeaderStats, PerfProducts, PerfRiskIndicators, PerfNetValues, MomAccountRecord
 
     pid = request.query_params.get('pid')
     search = request.query_params.get('search', '').strip()
@@ -423,6 +426,7 @@ def advisor_performance(request):
         return Response({'detail': f'未找到 pid={pid} 的产品'}, status=404)
 
     risk = PerfRiskIndicators.objects.filter(pid=pid_int).first()
+    header = PerfHeaderStats.objects.filter(pid=pid_int, trade_date__isnull=False).order_by('-trade_date').first()
 
     # 从 MomAccountRecord 取投顾概览（account_id = product_name）
     acct = MomAccountRecord.objects.filter(account_id=product.product_name).first()
@@ -435,6 +439,7 @@ def advisor_performance(request):
         'group_name': rj.get('groupName'),
         'product_type': product.product_type,
         'last_edit_ts': product.last_edit_ts,
+        'data_update_date': header.trade_date.isoformat() if header and header.trade_date else None,
         # 投顾概览（来自 mom_account_record）
         'account_name': acct.account_name if acct else None,
         'account_code': acct.account_id if acct else None,
@@ -444,26 +449,19 @@ def advisor_performance(request):
         'product_name_cn': acct.product_name if acct else None,
     }
 
-    # 风险收益指标（优先取 1 年期，其次成立以来）
-    def _val(risk_obj, field_1y, field_since):
-        if not risk_obj:
-            return None
-        v = getattr(risk_obj, field_1y, None)
-        if v is None:
-            v = getattr(risk_obj, field_since, None)
-        return v
-
+    # 风险收益指标：投顾业绩顶部基本数据取成立以来口径
     indicators = {}
     if risk:
         indicators = {
-            'annual_yield': _val(risk, 'annual_yield_1y', 'annual_yield_since'),
-            'annual_volatility': _val(risk, 'annual_volatility_1y', 'annual_volatility_since'),
-            'max_drawdown': _val(risk, 'max_drawdown_1y', 'max_drawdown_since'),
-            'sharpe_ratio': _val(risk, 'sharpe_ratio_1y', 'sharpe_ratio_since'),
-            'kama_ratio': _val(risk, 'kama_ratio_1y', 'kama_ratio_since'),
-            'info_ratio': _val(risk, 'info_ratio_1y', 'info_ratio_since'),
-            'alpha': _val(risk, 'alpha_1y', 'alpha_since'),
-            'beta': _val(risk, 'beta_1y', 'beta_since'),
+            'total_return': header.since_inception_rise if header else None,
+            'annual_yield': risk.annual_yield_since,
+            'annual_volatility': risk.annual_volatility_since,
+            'max_drawdown': risk.max_drawdown_since,
+            'sharpe_ratio': risk.sharpe_ratio_since,
+            'kama_ratio': risk.kama_ratio_since,
+            'info_ratio': risk.info_ratio_since,
+            'alpha': risk.alpha_since,
+            'beta': risk.beta_since,
         }
 
     # 净值序列：从 perf_net_values 查询，按日期升序
@@ -497,6 +495,520 @@ def advisor_performance(request):
         'info': info,
         'indicators': indicators,
         'nav_series': nav_series,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sector_varieties(request):
+    """品种搜索列表，支持按品种代码或简称模糊查询。"""
+    q = request.query_params.get('q', '').strip()
+    limit = min(max(int(request.query_params.get('limit', 20) or 20), 1), 50)
+
+    with connection.cursor() as cursor:
+        params = []
+        where_sql = ''
+        if q:
+            where_sql = 'WHERE variety_code LIKE %s OR variety_name LIKE %s'
+            like = f'%{q}%'
+            params.extend([like, like])
+
+        cursor.execute(
+            f"""
+            SELECT variety_code, variety_name
+            FROM (
+                SELECT
+                    variety_code,
+                    variety_name,
+                    MAX(trade_date) AS latest_date
+                FROM yl_perf_variety_pnl_trend
+                {where_sql}
+                GROUP BY variety_code, variety_name
+            ) v
+            ORDER BY latest_date DESC, variety_code
+            LIMIT %s
+            """,
+            [*params, limit],
+        )
+        rows = [
+            {'code': row[0], 'name': row[1]}
+            for row in cursor.fetchall()
+        ]
+
+    return Response({'results': rows})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sector_contract_kline(request):
+    """合约日K线数据。"""
+    contract = request.query_params.get('contract', '').strip()
+    account = request.query_params.get('account', '250528_HG').strip() or '250528_HG'
+    window = request.query_params.get('window', '6m')
+    if not contract:
+        return Response({'detail': 'contract 不能为空'}, status=400)
+    allowed_windows = {'1m', '3m', '6m', '1y', 'all', 'custom'}
+    if window not in allowed_windows:
+        return Response({'detail': 'window 参数无效'}, status=400)
+    start_date = parse_date(request.query_params.get('start_date', '')) if window == 'custom' else None
+    end_date = parse_date(request.query_params.get('end_date', '')) if window == 'custom' else None
+    if window == 'custom' and (not start_date or not end_date or start_date > end_date):
+        return Response({'detail': '自定义日期范围无效'}, status=400)
+
+    code = contract.upper()
+    trade_page = max(int(request.query_params.get('trade_page', 1) or 1), 1)
+    trade_page_size = min(max(int(request.query_params.get('trade_page_size', 20) or 20), 1), 100)
+    offset = (trade_page - 1) * trade_page_size
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                ts_code,
+                trade_date,
+                open,
+                high,
+                low,
+                close,
+                vol,
+                amount,
+                oi
+            FROM fut_market_data
+            WHERE UPPER(ts_code) = %s
+               OR UPPER(ts_code) LIKE %s
+            ORDER BY trade_date
+            """,
+            [code, f'{code}.%'],
+        )
+        rows = [
+            {
+                'ts_code': row[0],
+                'date': row[1].isoformat() if row[1] else None,
+                'open': row[2],
+                'high': row[3],
+                'low': row[4],
+                'close': row[5],
+                'vol': row[6],
+                'amount': row[7],
+                'oi': row[8],
+            }
+            for row in cursor.fetchall()
+        ]
+        if rows:
+            latest_trade_date = parse_date(rows[-1]['date'])
+            if window == 'custom':
+                filter_start = start_date
+                filter_end = end_date
+            elif window == 'all':
+                filter_start = None
+                filter_end = None
+            else:
+                days_map = {'1m': 31, '3m': 93, '6m': 186, '1y': 366}
+                filter_start = latest_trade_date - timedelta(days=days_map[window])
+                filter_end = latest_trade_date
+
+            if filter_start or filter_end:
+                rows = [
+                    row for row in rows
+                    if (not filter_start or parse_date(row['date']) >= filter_start)
+                    and (not filter_end or parse_date(row['date']) <= filter_end)
+                ]
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM rh_trades
+            WHERE UPPER(contract) = %s
+              AND account = %s
+            """,
+            [code, account],
+        )
+        trade_count = cursor.fetchone()[0]
+
+        cursor.execute(
+            """
+            SELECT
+                r.trade_date,
+                r.trade_time,
+                r.account,
+                COALESCE(m.account_name, r.account) AS advisor_name,
+                r.contract,
+                r.side,
+                r.open_close,
+                r.trade_price,
+                r.trade_qty,
+                r.trade_amount,
+                r.fee,
+                r.close_profit,
+                r.daily_close_profit
+            FROM rh_trades r
+            LEFT JOIN mom_account_record m ON m.account_id = r.account
+            WHERE UPPER(r.contract) = %s
+              AND r.account = %s
+            ORDER BY r.trade_date DESC, r.trade_time DESC, r.id DESC
+            LIMIT %s OFFSET %s
+            """,
+            [code, account, trade_page_size, offset],
+        )
+        trade_rows = [
+            {
+                'trade_date': row[0].isoformat() if row[0] else None,
+                'trade_time': row[1],
+                'account': row[2],
+                'advisor_name': row[3],
+                'contract': row[4],
+                'side': row[5],
+                'open_close': row[6],
+                'trade_price': row[7],
+                'trade_qty': row[8],
+                'trade_amount': row[9],
+                'fee': row[10],
+                'close_profit': row[11],
+                'daily_close_profit': row[12],
+            }
+            for row in cursor.fetchall()
+        ]
+        cursor.execute(
+            f"""
+            SELECT
+                trade_date,
+                COALESCE(side, '') AS side,
+                COALESCE(open_close, '') AS open_close,
+                COUNT(*) AS trade_count,
+                SUM(COALESCE(trade_qty, 0)) AS trade_qty,
+                SUM(COALESCE(trade_amount, 0)) AS trade_amount,
+                CASE
+                    WHEN SUM(COALESCE(trade_qty, 0)) = 0 THEN AVG(trade_price)
+                    ELSE SUM(COALESCE(trade_price, 0) * COALESCE(trade_qty, 0)) / SUM(COALESCE(trade_qty, 0))
+                END AS avg_price
+            FROM rh_trades
+            WHERE UPPER(contract) = %s
+            {'AND account = %s' if account else ''}
+            GROUP BY trade_date, COALESCE(side, ''), COALESCE(open_close, '')
+            ORDER BY trade_date, side, open_close
+            """,
+            [code, account] if account else [code],
+        )
+        marker_rows = [
+            {
+                'date': row[0].isoformat() if row[0] else None,
+                'side': row[1],
+                'open_close': row[2],
+                'trade_count': row[3],
+                'trade_qty': row[4],
+                'trade_amount': row[5],
+                'avg_price': row[6],
+            }
+            for row in cursor.fetchall()
+        ]
+
+    return Response({
+        'contract': contract,
+        'account': account,
+        'window': window,
+        'start_date': start_date.isoformat() if start_date else (rows[0]['date'] if rows else None),
+        'end_date': end_date.isoformat() if end_date else (rows[-1]['date'] if rows else None),
+        'ts_code': rows[0]['ts_code'] if rows else contract.upper(),
+        'latest_date': rows[-1]['date'] if rows else None,
+        'rows': rows,
+        'marker_rows': marker_rows,
+        'trade_rows': trade_rows,
+        'trade_count': trade_count,
+        'trade_page': trade_page,
+        'trade_page_size': trade_page_size,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sector_advisor_variety(request):
+    """单个投顾在单个品种上的累计盈亏与成交记录。"""
+    account = request.query_params.get('account', '250528_HG').strip()
+    variety = request.query_params.get('variety', 'LH').strip()
+    trade_page = max(int(request.query_params.get('trade_page', 1) or 1), 1)
+    trade_page_size = min(max(int(request.query_params.get('trade_page_size', 20) or 20), 1), 100)
+    offset = (trade_page - 1) * trade_page_size
+
+    if not account or not variety:
+        return Response({'detail': 'account 和 variety 不能为空'}, status=400)
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT COALESCE(m.account_name, %s) AS advisor_name
+            FROM mom_account_record m
+            WHERE m.account_id = %s
+            LIMIT 1
+            """,
+            [account, account],
+        )
+        advisor_row = cursor.fetchone()
+        advisor_name = advisor_row[0] if advisor_row else account
+
+        cursor.execute(
+            """
+            SELECT
+                t.trade_date,
+                MAX(t.variety_code) AS variety_code,
+                MAX(t.variety_name) AS variety_name,
+                SUM(COALESCE(t.accum_pl_value, 0)) AS cumulative_pnl,
+                SUM(COALESCE(t.profit_loss_value, 0)) AS daily_pnl
+            FROM yl_perf_variety_pnl_trend t
+            WHERE t.calc_window = 'std'
+              AND t.account = %s
+              AND (t.variety_code = %s OR t.variety_name = %s)
+            GROUP BY t.trade_date
+            ORDER BY t.trade_date
+            """,
+            [account, variety, variety],
+        )
+        chart_rows = [
+            {
+                'date': row[0].isoformat() if row[0] else None,
+                'symbol_code': row[1],
+                'symbol_name': row[2],
+                'cumulative_pnl': row[3],
+                'daily_pnl': row[4],
+            }
+            for row in cursor.fetchall()
+        ]
+        selected_variety_code = chart_rows[-1]['symbol_code'] if chart_rows else variety
+        selected_variety_name = chart_rows[-1]['symbol_name'] if chart_rows else variety
+
+        contract_like = f'{selected_variety_code}%'
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM rh_trades
+            WHERE account = %s AND contract LIKE %s
+            """,
+            [account, contract_like],
+        )
+        trade_count = cursor.fetchone()[0]
+
+        cursor.execute(
+            """
+            SELECT
+                trade_date,
+                trade_time,
+                account,
+                contract,
+                side,
+                open_close,
+                trade_price,
+                trade_qty,
+                trade_amount,
+                fee,
+                close_profit,
+                daily_close_profit
+            FROM rh_trades
+            WHERE account = %s AND contract LIKE %s
+            ORDER BY trade_date DESC, trade_time DESC, id DESC
+            LIMIT %s OFFSET %s
+            """,
+            [account, contract_like, trade_page_size, offset],
+        )
+        trade_rows = [
+            {
+                'trade_date': row[0].isoformat() if row[0] else None,
+                'trade_time': row[1],
+                'account': row[2],
+                'contract': row[3],
+                'side': row[4],
+                'open_close': row[5],
+                'trade_price': row[6],
+                'trade_qty': row[7],
+                'trade_amount': row[8],
+                'fee': row[9],
+                'close_profit': row[10],
+                'daily_close_profit': row[11],
+            }
+            for row in cursor.fetchall()
+        ]
+
+    return Response({
+        'account': account,
+        'advisor_name': advisor_name,
+        'variety': selected_variety_code,
+        'variety_name': selected_variety_name,
+        'latest_date': chart_rows[-1]['date'] if chart_rows else None,
+        'chart_rows': chart_rows,
+        'trade_rows': trade_rows,
+        'trade_count': trade_count,
+        'trade_page': trade_page,
+        'trade_page_size': trade_page_size,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sector_pnl(request):
+    """品种盈亏页面数据。
+
+    默认使用 calc_window=std（成立以来）。
+    """
+    window = request.query_params.get('window', 'std')
+    variety = request.query_params.get('variety', 'LH').strip()
+    allowed_windows = {'1m', '3m', '6m', '1y', 'ytd', 'std', 'custom'}
+    if window not in allowed_windows:
+        return Response({'detail': 'window 参数无效'}, status=400)
+    is_custom = window == 'custom'
+    start_date = parse_date(request.query_params.get('start_date', '')) if is_custom else None
+    end_date = parse_date(request.query_params.get('end_date', '')) if is_custom else None
+    if is_custom and (not start_date or not end_date or start_date > end_date):
+        return Response({'detail': '自定义日期范围无效'}, status=400)
+    stat_window = 'std' if is_custom else window
+
+    with connection.cursor() as cursor:
+        filters = ['s.calc_window = %s']
+        params = [stat_window]
+        if variety:
+            filters.append('(s.variety_code = %s OR s.variety_name = %s)')
+            params.extend([variety, variety])
+        where_sql = ' AND '.join(filters)
+
+        trend_filters = ['t.calc_window = %s']
+        trend_params = [stat_window]
+        if variety:
+            trend_filters.append('(t.variety_code = %s OR t.variety_name = %s)')
+            trend_params.extend([variety, variety])
+        if is_custom:
+            trend_filters.append('t.trade_date BETWEEN %s AND %s')
+            trend_params.extend([start_date, end_date])
+        trend_where_sql = ' AND '.join(trend_filters)
+
+        cursor.execute(
+            f"""
+            SELECT
+                t.trade_date,
+                MAX(t.variety_code) AS variety_code,
+                MAX(t.variety_name) AS variety_name,
+                SUM(COALESCE(t.accum_pl_value, 0)) AS cumulative_pnl,
+                SUM(COALESCE(t.profit_loss_value, 0)) AS daily_pnl,
+                COUNT(DISTINCT t.account) AS advisor_count
+            FROM yl_perf_variety_pnl_trend t
+            WHERE {trend_where_sql}
+            GROUP BY t.trade_date
+            ORDER BY t.trade_date
+            """,
+            trend_params,
+        )
+        chart_rows = [
+            {
+                'date': row[0].isoformat() if row[0] else None,
+                'symbol_code': row[1],
+                'symbol_name': row[2],
+                'cumulative_pnl': row[3],
+                'daily_pnl': row[4],
+                'advisor_count': row[5],
+            }
+            for row in cursor.fetchall()
+        ]
+        selected_variety_code = chart_rows[-1]['symbol_code'] if chart_rows else variety
+        selected_variety_name = chart_rows[-1]['symbol_name'] if chart_rows else variety
+        pnl_date_filters = ''
+        pnl_date_params = []
+        if is_custom:
+            pnl_date_filters = ' AND trade_date BETWEEN %s AND %s'
+            pnl_date_params = [start_date, end_date]
+
+        cursor.execute(
+            f"""
+            SELECT
+                COALESCE(m.account_name, s.account) AS advisor_name,
+                s.account AS advisor_code,
+                CASE WHEN p.pid IS NULL THEN 0 ELSE 1 END AS has_position,
+                s.variety_code,
+                s.variety_name,
+                pnl.cumulative_profit_loss,
+                s.trade_amount,
+                s.trade_qty_avg,
+                s.trade_amount_avg,
+                s.intraday_trade_ratio,
+                s.turnover_rate,
+                s.win_ratio,
+                s.profit_loss_ratio,
+                s.profit_max,
+                s.loss_max,
+                s.margin_rate
+            FROM yl_perf_trade_variety_stat s
+            LEFT JOIN mom_account_record m ON m.account_id = s.account
+            LEFT JOIN (
+                SELECT account, SUM(COALESCE(accum_pl_value, 0)) AS cumulative_profit_loss
+                FROM yl_perf_variety_pnl_trend
+                WHERE calc_window = %s
+                  AND (variety_code = %s OR variety_name = %s)
+                  {pnl_date_filters}
+                  AND trade_date = (
+                      SELECT MAX(trade_date)
+                      FROM yl_perf_variety_pnl_trend
+                      WHERE calc_window = %s
+                        AND (variety_code = %s OR variety_name = %s)
+                        {pnl_date_filters}
+                  )
+                GROUP BY account
+            ) pnl ON pnl.account = s.account
+            LEFT JOIN (
+                SELECT pid
+                FROM perf_variety_position_detail
+                WHERE variety = %s
+                  AND trade_date = (
+                      SELECT MAX(trade_date)
+                      FROM perf_variety_position_detail
+                      WHERE variety = %s
+                  )
+                  AND (COALESCE(more_market_value, 0) <> 0 OR COALESCE(empty_market_value, 0) <> 0)
+                GROUP BY pid
+            ) p ON p.pid = s.pid
+            WHERE {where_sql}
+            ORDER BY COALESCE(s.trade_amount, 0) DESC
+            LIMIT 500
+            """,
+            [
+                stat_window,
+                variety,
+                variety,
+                *pnl_date_params,
+                stat_window,
+                variety,
+                variety,
+                *pnl_date_params,
+                selected_variety_name,
+                selected_variety_name,
+                *params,
+            ],
+        )
+        detail_rows = [
+            {
+                'advisor_name': row[0],
+                'advisor_code': row[1],
+                'has_position': bool(row[2]),
+                'symbol_code': row[3],
+                'symbol_name': row[4],
+                'profit_loss': row[5],
+                'trade_amount': row[6],
+                'avg_daily_volume': row[7],
+                'avg_daily_amount': row[8],
+                'intraday_trade_ratio': row[9],
+                'turnover_rate': row[10],
+                'win_rate': row[11],
+                'profit_loss_ratio': row[12],
+                'max_profit': row[13],
+                'max_loss': row[14],
+                'margin_return_rate': row[15],
+            }
+            for row in cursor.fetchall()
+        ]
+
+        latest_date = chart_rows[-1]['date'] if chart_rows else None
+
+    return Response({
+        'window': window,
+        'start_date': start_date.isoformat() if start_date else None,
+        'end_date': end_date.isoformat() if end_date else None,
+        'variety': selected_variety_code,
+        'variety_name': selected_variety_name,
+        'latest_date': latest_date,
+        'chart_rows': chart_rows,
+        'detail_rows': detail_rows,
     })
 
 

@@ -40,6 +40,10 @@
 .d-nav-it.on { color: #FFF; background: rgba(255,255,255,.07); }
 .d-nav-it.on::before { content: ''; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px; background: var(--brass); }
 .d-nav-it.on .no { color: var(--brass); }
+.d-nav-sub { padding: 2px 0 5px 44px; }
+.d-nav-sub-it { display: block; padding: 6px 18px 6px 0; color: #9F9A8C; font-size: 12px; text-decoration: none; }
+.d-nav-sub-it:hover { color: #F2EDE0; }
+.d-nav-sub-it.on { color: #FFF; }
 .d-side-foot { padding: 14px 18px; border-top: 1px solid rgba(255,255,255,.07); }
 .d-side-foot a { display: flex; align-items: center; gap: 10px; color: #C4BFAF; font-size: 13px; text-decoration: none; }
 .d-side-foot a:hover { color: #F2EDE0; }
@@ -73,7 +77,7 @@
 .d-card-b { padding: 16px 18px; }
 
 /* ---------- KPI 指标栏（8列通栏） ---------- */
-.d-kpis { display: grid; grid-template-columns: repeat(8, 1fr); margin-top: 14px; border-top: 1px solid var(--line2); }
+.d-kpis { display: grid; grid-template-columns: repeat(9, 1fr); margin-top: 14px; border-top: 1px solid var(--line2); }
 .d-kpis > div { padding: 10px 0 2px; border-right: 1px solid var(--line2); text-align: center; }
 .d-kpis > div:last-child { border-right: 0; }
 .d-kpis .k { font-size: 10px; color: var(--muted); letter-spacing: .05em; }

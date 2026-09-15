@@ -1,17 +1,5 @@
 <template>
   <div class="d-anim" style="max-width:1460px;margin:0 auto">
-    <!-- 页头 -->
-    <div class="d-page-head">
-      <div>
-        <h1>投顾业绩</h1>
-        <div class="sub">{{ advisorStore.advisors.length }} 家在管投顾 · 业绩评价 · 归因 · 横向比较</div>
-      </div>
-      <div style="display:flex;gap:8px">
-        <button class="d-btn">对比视图</button>
-        <button class="d-btn">导出业绩表</button>
-      </div>
-    </div>
-
     <!-- 加载中 -->
     <div v-if="loading" class="d-card" style="display:flex;align-items:center;justify-content:center;height:320px">
       <span class="d-muted">加载中…</span>
@@ -32,6 +20,9 @@
               <span class="d-card-t" style="font-size:17px">{{ detail.info.account_name || detail.info.product_name }}</span>
               <span v-if="detail.info.is_stop === 0" class="d-pill ok">运行中</span>
               <span v-else class="d-pill gray">已停止</span>
+              <span v-if="detail.info.data_update_date" class="d-muted d-mono" style="margin-left:auto;font-size:11px">
+                数据更新至{{ detail.info.data_update_date }}
+              </span>
             </div>
             <div class="d-muted d-mono" style="font-size:11px;margin-top:4px">
               {{ detail.info.account_code || detail.info.product_name }}
@@ -40,8 +31,9 @@
               <span v-if="detail.info.invest_cate" style="margin-left:10px">投资范围: {{ detail.info.invest_cate }}</span>
             </div>
           </div>
-          <!-- 8 列 KPI 通栏 -->
+          <!-- KPI 通栏 -->
           <div class="d-kpis">
+            <div><div class="k">总收益</div><div class="v" :class="fmtColorPct(detail.indicators.total_return)">{{ fmtPct(detail.indicators.total_return) }}</div></div>
             <div><div class="k">年化收益</div><div class="v" :class="fmtColorPct(detail.indicators.annual_yield)">{{ fmtPct(detail.indicators.annual_yield) }}</div></div>
             <div><div class="k">夏普</div><div class="v">{{ fmtNum(detail.indicators.sharpe_ratio) }}</div></div>
             <div><div class="k">卡玛</div><div class="v">{{ fmtNum(detail.indicators.kama_ratio) }}</div></div>
@@ -80,11 +72,24 @@
             </span>
           </div>
           <template v-if="(detail.nav_series || []).length">
-            <div style="position:relative">
+            <div style="position:relative" @mousemove="updateDomTooltip" @mouseleave="hideChartTooltip">
               <div ref="navChartRef" style="width:100%;height:520px"></div>
-              <!-- 自定义双 tooltip -->
+              <div
+                v-if="zoomLabel.show"
+                :style="{ position:'absolute', left: zoomLabel.startX+'px', top:'263px', transform:'translateX(0)', zIndex:99, color:'#8F8A79', fontSize:'10px', fontFamily:'var(--mono)', pointerEvents:'none', whiteSpace:'nowrap' }"
+              >
+                {{ zoomLabel.startDate }}
+              </div>
+              <div
+                v-if="zoomLabel.show"
+                :style="{ position:'absolute', left: zoomLabel.endX+'px', top:'263px', transform:'translateX(-100%)', zIndex:99, color:'#8F8A79', fontSize:'10px', fontFamily:'var(--mono)', pointerEvents:'none', whiteSpace:'nowrap' }"
+              >
+                {{ zoomLabel.endDate }}
+              </div>
+              <!-- 自定义 tooltip：同一日期点，上方显示收益率，下方显示动态回撤 -->
+              <div v-if="tipData.show" :style="{ position:'absolute', left: tipData.guideX+'px', top:'15px', height:'435px', zIndex:98, borderLeft:'1px dashed #B8B09C', pointerEvents:'none' }"></div>
               <div v-if="tipData.show" :style="{ position:'absolute', left: tipData.x+'px', top:'10px', zIndex:99, background:'#FDFCF8', border:'1px solid #E5E0D2', borderRadius:'4px', padding:'6px 10px', fontSize:'11px', boxShadow:'0 2px 8px rgba(0,0,0,0.08)', pointerEvents:'none', whiteSpace:'nowrap' }">
-                <div style="color:#999;margin-bottom:2px">{{ tipData.date }}</div>
+                <div style="color:#999;margin-bottom:2px">{{ firstChartDate }} 至 {{ tipData.date }}</div>
                 <div style="display:flex;align-items:center;gap:6px">
                   <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#9C6B2F"></span>
                   <span style="color:#666">{{ chartAdvisorName }}</span>
@@ -149,11 +154,95 @@ const navChartRef = ref(null)
 let navChart = null
 
 // 自定义 tooltip 数据
-const tipData = ref({ show: false, x: 0, date: '', ret: 0, dd: 0 })
+const emptyTipData = () => ({ show: false, panel: '', x: 0, guideX: 0, date: '', ret: 0, dd: 0 })
+const tipData = ref(emptyTipData())
+const zoomLabel = ref({ show: false, startDate: '', endDate: '', startX: 55, endX: 55 })
 let chartDates = []
 let chartCumReturns = []
 let chartDrawdowns = []
 const chartAdvisorName = ref('')
+const firstChartDate = computed(() => chartDates[0] || '')
+
+function isInChartHoverArea(event) {
+  const y = event.offsetY
+  if (y >= 15 && y <= 265) {
+    return true
+  } else if (y >= 350 && y <= 450) {
+    return true
+  }
+  return false
+}
+
+function getTooltipIndexByOffset(offsetX) {
+  const left = 55
+  const right = 25
+  const width = navChartRef.value?.clientWidth || 0
+  const plotWidth = width - left - right
+  if (!chartDates.length || plotWidth <= 0 || offsetX < left || offsetX > width - right) return -1
+  const ratio = (offsetX - left) / plotWidth
+  return Math.min(Math.max(Math.round(ratio * (chartDates.length - 1)), 0), chartDates.length - 1)
+}
+
+function updateDomTooltip(event) {
+  if (!navChart || !navChartRef.value) return
+  const rect = event.currentTarget.getBoundingClientRect()
+  const offsetX = event.clientX - rect.left
+  const offsetY = event.clientY - rect.top
+  if (!isInChartHoverArea({ offsetY })) {
+    tipData.value = emptyTipData()
+    return
+  }
+
+  const idx = getTooltipIndexByOffset(offsetX)
+  updateTooltipByIndex(idx)
+}
+
+function updateTooltipByIndex(idx) {
+  if (idx < 0) {
+    tipData.value = emptyTipData()
+    return
+  }
+
+  const point = navChart.convertToPixel({ xAxisIndex: 0 }, chartDates[idx])
+  const chartWidth = navChartRef.value?.clientWidth || 0
+  const x = Math.min(Math.max(point + 12, 55), Math.max(chartWidth - 220, 55))
+  tipData.value = {
+    show: true,
+    panel: 'both',
+    x,
+    guideX: point,
+    date: chartDates[idx],
+    ret: chartCumReturns[idx],
+    dd: chartDrawdowns[idx],
+  }
+}
+
+function hideChartTooltip() {
+  tipData.value = emptyTipData()
+}
+
+function updateZoomLabel(start = 0, end = 100) {
+  if (!chartDates.length || !navChartRef.value) {
+    zoomLabel.value = { show: false, startDate: '', endDate: '', startX: 55, endX: 55 }
+    return
+  }
+  const left = 55
+  const right = 25
+  const width = navChartRef.value.clientWidth || 0
+  const plotWidth = Math.max(width - left - right, 0)
+  const startRatio = Math.min(Math.max(Number(start) / 100, 0), 1)
+  const endRatio = Math.min(Math.max(Number(end) / 100, 0), 1)
+  const last = chartDates.length - 1
+  const startIdx = Math.min(Math.max(Math.round(startRatio * last), 0), last)
+  const endIdx = Math.min(Math.max(Math.round(endRatio * last), 0), last)
+  zoomLabel.value = {
+    show: true,
+    startDate: chartDates[startIdx],
+    endDate: chartDates[endIdx],
+    startX: left + plotWidth * startRatio + 4,
+    endX: left + plotWidth * endRatio - 4,
+  }
+}
 
 // 根据时间段过滤净值序列
 function filterByPeriod(series) {
@@ -182,6 +271,7 @@ function filterByPeriod(series) {
 }
 
 function changePeriod() {
+  hideChartTooltip()
   if (navChart) renderCharts()
 }
 
@@ -265,6 +355,7 @@ function renderCharts() {
   chartCumReturns = cumReturns
   chartDrawdowns = drawdowns
   chartAdvisorName.value = advisorName
+  updateZoomLabel(0, 100)
 
   navChart.setOption({
     tooltip: { show: false },
@@ -274,6 +365,7 @@ function renderCharts() {
     },
     title: [
       { text: '动态回撤', left: 55, top: 315, textStyle: { fontSize: 12, fontWeight: 'normal', color: '#333' } },
+      { text: `截止日期：${dates[dates.length - 1] || '—'}`, right: 25, top: 315, textStyle: { fontSize: 11, fontWeight: 'normal', color: '#8F8A79' } },
     ],
     grid: [
       { left: 55, right: 25, top: 15, height: 250 },
@@ -303,39 +395,24 @@ function renderCharts() {
     ],
   })
 
-  // 确保旧事件监听被移除
-  navChart.off('updateAxisPointer')
-  // 监听 axisPointer 事件，同时显示两个自定义 tooltip
-  navChart.on('updateAxisPointer', (event) => {
-    if (event.axesByAxis) {
-      const xAxisInfo = event.axesByAxis['x0'] || event.axesByAxis['x1']
-      if (xAxisInfo && xAxisInfo.value != null) {
-        const idx = chartDates.indexOf(xAxisInfo.value)
-        if (idx >= 0) {
-          // 获取 grid 0 的像素坐标
-          const point = navChart.convertFromPixel({ xAxisIndex: 0 }, idx)
-          tipData.value = {
-            show: true,
-            x: point + 60,
-            date: chartDates[idx],
-            ret: chartCumReturns[idx],
-            dd: chartDrawdowns[idx],
-          }
-          return
-        }
-      }
-    }
-    tipData.value = { show: false, x: 0, date: '', ret: 0, dd: 0 }
+  navChart.off('dataZoom')
+  navChart.on('dataZoom', (event) => {
+    const payload = event.batch?.[0] || event
+    updateZoomLabel(payload.start ?? 0, payload.end ?? 100)
   })
 
   // 鼠标离开时隐藏
-  navChartRef.value.onmouseleave = () => {
-    tipData.value = { show: false, x: 0, date: '', ret: 0, dd: 0 }
-  }
+  navChartRef.value.onmouseleave = hideChartTooltip
 }
 
 function handleResize() {
   navChart?.resize()
+  const { startX, endX } = zoomLabel.value
+  if (zoomLabel.value.show && startX != null && endX != null) {
+    const option = navChart?.getOption()
+    const slider = option?.dataZoom?.find((z) => z.type === 'slider') || option?.dataZoom?.[1]
+    updateZoomLabel(slider?.start ?? 0, slider?.end ?? 100)
+  }
 }
 
 onMounted(async () => {

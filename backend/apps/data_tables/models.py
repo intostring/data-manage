@@ -124,6 +124,26 @@ class PerfNetValues(models.Model):
         db_table = 'perf_net_values'
 
 
+class PerfHeaderStats(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    pid = models.BigIntegerField(blank=True, null=True, db_comment='产品ID')
+    product_name = models.CharField(max_length=255, blank=True, null=True, db_comment='产品名称')
+    trade_date = models.DateField(blank=True, null=True, db_comment='交易日期')
+    net_value = models.FloatField(blank=True, null=True, db_comment='单位净值')
+    accumulated_net = models.FloatField(blank=True, null=True, db_comment='累计净值')
+    one_month_rise = models.FloatField(blank=True, null=True, db_comment='近一月收益')
+    three_month_rise = models.FloatField(blank=True, null=True, db_comment='近三月收益')
+    six_month_rise = models.FloatField(blank=True, null=True, db_comment='近六月收益')
+    year_rise = models.FloatField(blank=True, null=True, db_comment='今年以来收益')
+    since_inception_rise = models.FloatField(blank=True, null=True, db_comment='成立以来收益')
+    raw_json = models.JSONField(blank=True, null=True, db_comment='接口原始行JSON')
+    created_at = models.DateTimeField(blank=True, null=True, db_comment='入库时间')
+
+    class Meta:
+        managed = False
+        db_table = 'perf_header_stats'
+
+
 class QuotesDynamic(models.Model):
     uid = models.CharField(primary_key=True, max_length=64)
     text = models.CharField(max_length=512, blank=True, null=True)

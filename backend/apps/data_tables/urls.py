@@ -30,5 +30,9 @@ urlpatterns = [
     path('<str:key>/import/', views.table_import, name='table-import'),
     path('<str:key>/template/', views.table_template, name='table-template'),
     path('advisor/performance/', views.advisor_performance, name='advisor-performance'),
+    path('sector/varieties/', views.sector_varieties, name='sector-varieties'),
+    path('sector/pnl/', views.sector_pnl, name='sector-pnl'),
+    path('sector/contract-kline/', views.sector_contract_kline, name='sector-contract-kline'),
+    path('sector/advisor-variety/', views.sector_advisor_variety, name='sector-advisor-variety'),
     path('', include(router.urls)),
 ]
