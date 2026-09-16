@@ -14,6 +14,41 @@ from rest_framework.response import Response
 from .registry import table_registry
 
 
+# 持仓明细表(perf_variety_position_detail)的品种命名与标准表
+# (fut_symbol_info / fut_market_stats / yl_perf_variety_pnl_trend)不一致的别名
+POSITION_VARIETY_ALIASES = {
+    '中证1000': ['中证1000指数期货'],
+    '铁矿石': ['铁矿'],
+    '棕榈油': ['棕榈'],
+    'PTA': ['精对苯二甲酸'],
+    'LPG': ['液化石油气'],
+    'PVC': ['聚氯乙烯'],
+    '郑棉': ['棉花'],
+    '集运指数(欧线)': ['EC'],
+    '铝合金': ['AD'],
+    '纯苯': ['BZ'],
+    '原木': ['LG'],
+    '多晶硅': ['PS'],
+    '瓶片': ['PR'],
+    '对二甲苯': ['PX'],
+    '烧碱': ['SH'],
+    '双胶纸': ['OP'],
+    '丙烯': ['PL'],
+    '铂': ['PT'],
+    '钯': ['PD'],
+}
+
+
+def position_variety_names(standard_name):
+    """返回标准品种名在持仓明细表中的全部可能命名（含自身），用于 IN 查询。"""
+    return [standard_name, *POSITION_VARIETY_ALIASES.get(standard_name, [])]
+
+
+def position_variety_in_sql(names):
+    """生成 variety IN (...) 的占位片段，与参数列表配合使用。"""
+    return 'variety IN (' + ','.join(['%s'] * len(names)) + ')'
+
+
 # 筛选操作符 → Django ORM lookup 映射
 FILTER_OPS = {
     'eq': '',            # 精确匹配
@@ -891,6 +926,7 @@ def sector_advisor_variety(request):
         position_by_date = {}
         if pids:
             placeholders = ','.join(['%s'] * len(pids))
+            pos_names = position_variety_names(selected_variety_name)
             cursor.execute(
                 f"""
                 SELECT
@@ -898,12 +934,12 @@ def sector_advisor_variety(request):
                     SUM(COALESCE(p.more_market_value, 0) + COALESCE(p.empty_market_value, 0)) AS position_value,
                     SUM(COALESCE(p.more_market_value, 0) - COALESCE(p.empty_market_value, 0)) AS net_value
                 FROM perf_variety_position_detail p
-                WHERE p.variety = %s
+                WHERE {position_variety_in_sql(pos_names).replace('variety', 'p.variety')}
                   AND p.pid IN ({placeholders})
                 GROUP BY p.trade_date
                 ORDER BY p.trade_date
                 """,
-                [selected_variety_name, *pids],
+                [*pos_names, *pids],
             )
             position_by_date = {
                 (row[0].isoformat() if row[0] else None): (float(row[1] or 0), float(row[2] or 0))
@@ -1045,8 +1081,9 @@ def sector_pnl(request):
         selected_variety_name = chart_rows[-1]['symbol_name'] if chart_rows else variety
 
         # 品种每日持仓金额（多空市值合计）与单边敞口（轧差市值 = 多头 - 空头）
-        pos_filters = ['variety = %s']
-        pos_params = [selected_variety_name]
+        pos_names = position_variety_names(selected_variety_name)
+        pos_filters = [position_variety_in_sql(pos_names)]
+        pos_params = [*pos_names]
         if is_custom:
             pos_filters.append('trade_date BETWEEN %s AND %s')
             pos_params.extend([start_date, end_date])
@@ -1105,8 +1142,8 @@ def sector_pnl(request):
 
         # 当前持仓 pid（一次性取出最新日期）
         cursor.execute(
-            'SELECT MAX(trade_date) FROM perf_variety_position_detail WHERE variety = %s',
-            [selected_variety_name],
+            f'SELECT MAX(trade_date) FROM perf_variety_position_detail WHERE {position_variety_in_sql(pos_names)}',
+            pos_names,
         )
         pos_latest = cursor.fetchone()[0]
 
@@ -1145,7 +1182,7 @@ def sector_pnl(request):
             LEFT JOIN (
                 SELECT pid
                 FROM perf_variety_position_detail
-                WHERE variety = %s
+                WHERE {position_variety_in_sql(pos_names)}
                   AND trade_date = %s
                   AND (COALESCE(more_market_value, 0) <> 0 OR COALESCE(empty_market_value, 0) <> 0)
                 GROUP BY pid
@@ -1154,7 +1191,7 @@ def sector_pnl(request):
             ORDER BY COALESCE(s.trade_amount, 0) DESC
             LIMIT 500
             """,
-            [stat_window, selected_variety_name, pos_latest, *params],
+            [stat_window, *pos_names, pos_latest, *params],
         )
         detail_rows = []
         for row in cursor.fetchall():
@@ -2183,6 +2220,12 @@ def sector_board(request):
         for variety_code, variety_name, sector_code, sector_name in cursor.fetchall():
             sector_by_code[variety_code] = sector_code
             sector_by_name[variety_name] = sector_code
+        # 持仓明细表使用别名命名的品种（如 中证1000指数期货/铁矿/棕榈）也映射到同一板块
+        for std_name, aliases in POSITION_VARIETY_ALIASES.items():
+            code = sector_by_name.get(std_name)
+            if code:
+                for alias in aliases:
+                    sector_by_name[alias] = code
 
         # MOM 持仓/敞口/投顾数（持仓明细最新日期，按品种）
         cursor.execute(
