@@ -1140,12 +1140,8 @@ def sector_pnl(request):
                 for r in cursor.fetchall()
             }
 
-        # 当前持仓 pid（一次性取出最新日期）
-        cursor.execute(
-            f'SELECT MAX(trade_date) FROM perf_variety_position_detail WHERE {position_variety_in_sql(pos_names)}',
-            pos_names,
-        )
-        pos_latest = cursor.fetchone()[0]
+        # 当前持仓改用 rh_positions 原始持仓表判断（数据更新及时，按持仓数量而非保证金）
+        contract_like = f'{variety_code}%'
 
         filters = ['s.calc_window = %s', 's.variety_code = %s']
         params = [stat_window, variety_code]
@@ -1156,7 +1152,7 @@ def sector_pnl(request):
             SELECT
                 COALESCE(m.account_name, s.account) AS advisor_name,
                 s.account AS advisor_code,
-                CASE WHEN p.pid IS NULL THEN 0 ELSE 1 END AS has_position,
+                CASE WHEN p.account IS NULL THEN 0 ELSE 1 END AS has_position,
                 s.variety_code,
                 s.variety_name,
                 s.trade_amount,
@@ -1180,18 +1176,17 @@ def sector_pnl(request):
                 GROUP BY account
             ) tt ON tt.account = s.account
             LEFT JOIN (
-                SELECT pid
-                FROM perf_variety_position_detail
-                WHERE {position_variety_in_sql(pos_names)}
-                  AND trade_date = %s
-                  AND (COALESCE(more_market_value, 0) <> 0 OR COALESCE(empty_market_value, 0) <> 0)
-                GROUP BY pid
-            ) p ON p.pid = s.pid
+                SELECT DISTINCT account
+                FROM rh_positions
+                WHERE trade_date = (SELECT MAX(trade_date) FROM rh_positions)
+                  AND contract LIKE %s
+                  AND COALESCE(position_qty, 0) <> 0
+            ) p ON p.account = s.account
             WHERE {where_sql}
             ORDER BY COALESCE(s.trade_amount, 0) DESC
             LIMIT 500
             """,
-            [stat_window, *pos_names, pos_latest, *params],
+            [stat_window, contract_like, *params],
         )
         detail_rows = []
         for row in cursor.fetchall():
