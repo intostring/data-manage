@@ -1,3 +1,4 @@
+import re
 from datetime import timedelta
 
 from django.db import connection, models
@@ -1133,6 +1134,67 @@ def sector_pnl(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def sector_pnl_ranking(request):
+    """盈亏分析：盈利/亏损品种列表。
+
+    yl_perf_variety_pnl_trend 最新一期按品种聚合全体投顾的累计盈亏
+    （accum_pl_value 求和），盈利品种（value>0）与亏损品种（value<0）全量返回。
+    """
+    window = request.query_params.get('window', 'std')
+    allowed_windows = {'1m', '3m', '6m', '1y', 'ytd', 'std'}
+    if window not in allowed_windows:
+        return Response({'detail': 'window 参数无效'}, status=400)
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT variety_code, MAX(variety_name),
+                   SUM(COALESCE(accum_pl_value, 0)), COUNT(DISTINCT account)
+            FROM yl_perf_variety_pnl_trend
+            WHERE calc_window = %s
+              AND trade_date = (
+                  SELECT MAX(trade_date) FROM yl_perf_variety_pnl_trend WHERE calc_window = %s
+              )
+            GROUP BY variety_code
+            """,
+            [window, window],
+        )
+        rows = [
+            {
+                'code': r[0],
+                'name': r[1] or r[0],
+                'value': float(r[2] or 0),
+                'advisor_count': int(r[3] or 0),
+            }
+            for r in cursor.fetchall()
+        ]
+        cursor.execute(
+            'SELECT MAX(trade_date) FROM yl_perf_variety_pnl_trend WHERE calc_window = %s',
+            [window],
+        )
+        trade_date = cursor.fetchone()[0]
+
+    def with_rank(items):
+        return [{**item, 'rank': i + 1} for i, item in enumerate(items)]
+
+    profit_list = with_rank(sorted(
+        (r for r in rows if r['value'] > 0), key=lambda r: r['value'], reverse=True
+    ))
+    loss_list = with_rank(sorted(
+        (r for r in rows if r['value'] < 0), key=lambda r: r['value']
+    ))
+
+    return Response({
+        'trade_date': trade_date.isoformat() if trade_date else None,
+        'window': window,
+        'variety_count': len(rows),
+        'profit_list': profit_list,
+        'loss_list': loss_list,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def sector_bk_latest(request):
     """板块分析首模块：yl_perf_bk 最新一期的资产/保证金/风险度快照。"""
     with connection.cursor() as cursor:
@@ -1214,6 +1276,54 @@ def sector_bk_margin(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def sector_bk_net_risk(request):
+    """板块净持仓市值与10天风险度占比。"""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT trade_date
+            FROM yl_perf_bk_detail
+            WHERE trade_date = (SELECT MAX(trade_date) FROM yl_perf_bk_detail)
+            LIMIT 1
+            """
+        )
+        row = cursor.fetchone()
+        if not row:
+            return Response({'detail': '暂无板块净持仓市值与风险度数据'}, status=404)
+        trade_date = row[0]
+
+        cursor.execute(
+            """
+            SELECT code, net_market_value, risk_degree_10d
+            FROM yl_perf_bk_detail
+            WHERE trade_date = %s
+              AND level = 1
+            ORDER BY ABS(COALESCE(net_market_value, 0)) DESC
+            """,
+            [trade_date],
+        )
+        rows = [
+            {
+                'name': r[0],
+                'net_market_value': float(r[1] or 0),
+                'risk_degree_10d': float(r[2] or 0),
+            }
+            for r in cursor.fetchall()
+        ]
+
+    risk_total = sum(max(row['risk_degree_10d'], 0) for row in rows)
+    for row in rows:
+        row['risk_share'] = row['risk_degree_10d'] / risk_total if risk_total else None
+
+    return Response({
+        'trade_date': trade_date.isoformat() if trade_date else None,
+        'risk_total': risk_total,
+        'rows': rows,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def variety_top_margin(request):
     """品种保证金前30：yl_perf_bk_detail 中 level=2 的各品种，保证金按多空合计(buy+sell)降序取前30。
 
@@ -1253,6 +1363,399 @@ def variety_top_margin(request):
         'asset_total': asset_total,
         'margin': margin,
         'rows': varieties,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def variety_top_net_risk(request):
+    """品种净持仓市值与10天风险度占比前30。"""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT trade_date
+            FROM yl_perf_bk_detail
+            WHERE trade_date = (SELECT MAX(trade_date) FROM yl_perf_bk_detail)
+            LIMIT 1
+            """
+        )
+        row = cursor.fetchone()
+        if not row:
+            return Response({'detail': '暂无品种净持仓市值与风险度数据'}, status=404)
+        trade_date = row[0]
+
+        cursor.execute(
+            """
+            SELECT
+                d.code,
+                COALESCE(s.symbol_name, d.code) AS name,
+                d.net_market_value,
+                d.risk_degree_10d
+            FROM yl_perf_bk_detail d
+            LEFT JOIN fut_symbol_info s ON s.symbol_code = d.code
+            WHERE d.trade_date = %s
+              AND d.level = 2
+            ORDER BY ABS(COALESCE(d.net_market_value, 0)) DESC
+            LIMIT 30
+            """,
+            [trade_date],
+        )
+        rows = [
+            {
+                'code': r[0],
+                'name': r[1],
+                'net_market_value': float(r[2] or 0),
+                'risk_degree_10d': float(r[3] or 0),
+            }
+            for r in cursor.fetchall()
+        ]
+
+    risk_total = sum(max(row['risk_degree_10d'], 0) for row in rows)
+    for row in rows:
+        row['risk_share'] = row['risk_degree_10d'] / risk_total if risk_total else None
+
+    return Response({
+        'trade_date': trade_date.isoformat() if trade_date else None,
+        'risk_total': risk_total,
+        'rows': rows,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sector_bk_detail_tree(request):
+    """板块-品种-合约三级持仓明细树（yl_perf_bk_detail 最新一期）。
+
+    层级关系：
+    - level=1 板块（code 即板块名称）
+    - level=2 品种（code 为品种代码，经 fut_symbol_info.symbol_cate 归入板块）
+    - level=3 合约（code 前导字母大写后匹配品种代码）
+    各级按保证金占用（多+空）降序，父节点未出现在 level 数据中时按子节点即时归并生成。
+    """
+    db_num_fields = (
+        'buy_num', 'sell_num', 'net_num',
+        'buy_margin', 'sell_margin', 'net_margin', 'margin_ratio',
+        'buy_market_value', 'sell_market_value', 'net_market_value',
+        'net_mv_chg_1d', 'net_mv_chr_1d', 'net_mv_chg_1w', 'net_mv_chr_1w',
+        'hv_10d', 'hv_20d', 'hv_60d',
+        'risk_degree_10d', 'risk_degree_20d',
+    )
+    node_fields = db_num_fields + ('total_margin',)
+
+    def make_node(code, name, level):
+        return {'code': code, 'name': name, 'level': level, **{f: 0.0 for f in node_fields}, 'children': []}
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT trade_date
+            FROM yl_perf_bk_detail
+            WHERE trade_date = (SELECT MAX(trade_date) FROM yl_perf_bk_detail)
+            LIMIT 1
+            """
+        )
+        row = cursor.fetchone()
+        if not row:
+            return Response({'detail': '暂无板块持仓明细数据'}, status=404)
+        trade_date = row[0]
+
+        cursor.execute(
+            """
+            SELECT code, buy_num, sell_num, net_num,
+                   buy_margin, sell_margin, net_margin, margin_ratio,
+                   buy_market_value, sell_market_value, net_market_value,
+                   net_mv_chg_1d, net_mv_chr_1d, net_mv_chg_1w, net_mv_chr_1w,
+                   hv_10d, hv_20d, hv_60d,
+                   risk_degree_10d, risk_degree_20d, level
+            FROM yl_perf_bk_detail
+            WHERE trade_date = %s
+            """,
+            [trade_date],
+        )
+        detail_rows = cursor.fetchall()
+
+        # 品种代码 -> (品种名称, 板块名称)
+        cursor.execute('SELECT symbol_code, symbol_name, symbol_cate FROM fut_symbol_info')
+        variety_info = {r[0]: (r[1], r[2]) for r in cursor.fetchall()}
+
+    sectors = {}   # 板块名 -> node
+    varieties = {}  # 品种代码 -> node
+
+    def get_sector(name):
+        node = sectors.get(name)
+        if not node:
+            node = make_node(name, name, 1)
+            sectors[name] = node
+        return node
+
+    def get_variety(code):
+        node = varieties.get(code)
+        if not node:
+            name, sector_name = variety_info.get(code, (code, None))
+            sector = get_sector(sector_name or '未分类')
+            node = make_node(code, name or code, 2)
+            sector['children'].append(node)
+            varieties[code] = node
+        return node
+
+    for r in detail_rows:
+        code, values, level = r[0], [float(v or 0) for v in r[1:20]], r[20]
+        if level == 1:
+            node = get_sector(code)
+        elif level == 2:
+            node = get_variety(code.upper())
+        elif level == 3:
+            # 仅取前导字母（如 a2611-P-4500 -> a，AP701P6700 -> AP），避免误读期权代码中的 P/C
+            prefix = code[:len(code) - len(code.lstrip('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'))].upper()
+            node = make_node(code, code, 3)
+            get_variety(prefix)['children'].append(node)
+        else:
+            continue
+        for field, value in zip(db_num_fields, values):
+            node[field] = value
+        node['total_margin'] = node['buy_margin'] + node['sell_margin']
+
+    def sort_nodes(nodes):
+        nodes.sort(key=lambda n: n['total_margin'], reverse=True)
+        for child in nodes:
+            sort_nodes(child['children'])
+
+    tree = list(sectors.values())
+    sort_nodes(tree)
+
+    return Response({
+        'trade_date': trade_date.isoformat() if trade_date else None,
+        'rows': tree,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sector_position_overview(request):
+    """板块持仓概览：板块-品种-合约三级树。
+
+    每级字段：
+    - 净持仓市值、净持仓市值变化(1天/1周) 来自 yl_perf_bk_detail(三级)
+    - 波动率、全市场持仓量/成交量 来自 fut_market_stats(品种) / fut_contract_stats(期货合约)
+    - 波动率/持仓量/成交量分位数 = 当前值在近约250个交易日历史中的百分位(0~1)
+    - 持仓量/成交量占比 = 该节点 / 全市场合计；板块级为子品种聚合
+    期权合约无法映射到期货合约表，其全市场字段留空。
+    """
+    lookback_days = 400  # 日历日，约覆盖 250 个交易日
+
+    def percentile_rank(series, current):
+        if current is None or len(series) < 2:
+            return None
+        less = sum(1 for v in series if v < current)
+        return less / (len(series) - 1)
+
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT MAX(trade_date) FROM yl_perf_bk_detail')
+        bk_latest = cursor.fetchone()[0]
+        cursor.execute('SELECT MAX(trade_date) FROM fut_market_stats')
+        mkt_latest = cursor.fetchone()[0]
+        cursor.execute('SELECT MAX(trade_date) FROM fut_contract_stats')
+        ct_latest = cursor.fetchone()[0]
+        if not bk_latest or not mkt_latest:
+            return Response({'detail': '暂无数据'}, status=404)
+
+        # yl_perf_bk_detail 三级：净持仓市值及变化
+        cursor.execute(
+            """
+            SELECT code, level, net_market_value, net_mv_chg_1d, net_mv_chg_1w
+            FROM yl_perf_bk_detail
+            WHERE trade_date = %s
+            """,
+            [bk_latest],
+        )
+        bk_detail = list(cursor.fetchall())
+
+        # 品种代码 -> (品种名称, 板块名称)
+        cursor.execute('SELECT symbol_code, symbol_name, symbol_cate FROM fut_symbol_info')
+        variety_info = {r[0]: (r[1], r[2]) for r in cursor.fetchall()}
+
+        # 品种级全市场数据（最新 + 历史）
+        cursor.execute(
+            """
+            SELECT variety_code, total_volume, total_oi, vol_10d
+            FROM fut_market_stats
+            WHERE trade_date = %s
+            """,
+            [mkt_latest],
+        )
+        mkt_latest_rows = {}
+        oi_mkt_total = 0.0
+        volume_mkt_total = 0.0
+        for code, volume, oi, vol in cursor.fetchall():
+            mkt_latest_rows[code] = (float(volume or 0), float(oi or 0), float(vol) if vol is not None else None)
+            oi_mkt_total += float(oi or 0)
+            volume_mkt_total += float(volume or 0)
+
+        cursor.execute(
+            """
+            SELECT variety_code, vol_10d, total_oi, total_volume
+            FROM fut_market_stats
+            WHERE trade_date >= %s
+            """,
+            [mkt_latest - timedelta(days=lookback_days)],
+        )
+        mkt_hist = {}
+        for code, vol, oi, volume in cursor.fetchall():
+            b = mkt_hist.setdefault(code, {'vol': [], 'oi': [], 'volume': []})
+            if vol is not None:
+                b['vol'].append(float(vol))
+            if oi is not None:
+                b['oi'].append(float(oi))
+            if volume is not None:
+                b['volume'].append(float(volume))
+
+        # 合约级全市场数据（最新 + 历史）：ts_code 去掉交易所后缀后大写作为 key
+        cursor.execute(
+            """
+            SELECT ts_code, volume, oi, vol_10d
+            FROM fut_contract_stats
+            WHERE trade_date = %s
+            """,
+            [ct_latest],
+        )
+        ct_latest_rows = {}
+        oi_ct_total = 0.0
+        volume_ct_total = 0.0
+        for ts_code, volume, oi, vol in cursor.fetchall():
+            key = ts_code.split('.')[0].upper()
+            ct_latest_rows[key] = (float(volume or 0), float(oi or 0), float(vol) if vol is not None else None)
+            oi_ct_total += float(oi or 0)
+            volume_ct_total += float(volume or 0)
+
+        cursor.execute(
+            """
+            SELECT ts_code, vol_10d, oi, volume
+            FROM fut_contract_stats
+            WHERE trade_date >= %s
+            """,
+            [ct_latest - timedelta(days=lookback_days)],
+        )
+        ct_hist = {}
+        for ts_code, vol, oi, volume in cursor.fetchall():
+            key = ts_code.split('.')[0].upper()
+            b = ct_hist.setdefault(key, {'vol': [], 'oi': [], 'volume': []})
+            if vol is not None:
+                b['vol'].append(float(vol))
+            if oi is not None:
+                b['oi'].append(float(oi))
+            if volume is not None:
+                b['volume'].append(float(volume))
+
+    def make_node(code, name, level):
+        return {
+            'code': code, 'name': name, 'level': level, 'children': [],
+            'net_market_value': None, 'net_mv_chg_1d': None, 'net_mv_chg_1w': None,
+            'volatility': None, 'vol_pctl': None,
+            'total_oi': None, 'oi_share': None, 'oi_pctl': None,
+            'total_volume': None, 'volume_share': None, 'volume_pctl': None,
+        }
+
+    sectors = {}
+    varieties = {}
+
+    def get_sector(name):
+        node = sectors.get(name)
+        if not node:
+            node = make_node(name, name, 1)
+            sectors[name] = node
+        return node
+
+    def get_variety(code):
+        node = varieties.get(code)
+        if not node:
+            name, sector_name = variety_info.get(code, (code, None))
+            sector = get_sector(sector_name or '未分类')
+            node = make_node(code, name or code, 2)
+            sector['children'].append(node)
+            varieties[code] = node
+        return node
+
+    # 1) 组装三级树 + 填净持仓市值及变化
+    for code, level, net_mv, chg_1d, chg_1w in bk_detail:
+        if level == 1:
+            node = get_sector(code)
+        elif level == 2:
+            node = get_variety(code.upper())
+        elif level == 3:
+            prefix = code[:len(code) - len(code.lstrip('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'))].upper()
+            node = make_node(code, code, 3)
+            get_variety(prefix)['children'].append(node)
+        else:
+            continue
+        node['net_market_value'] = float(net_mv) if net_mv is not None else None
+        node['net_mv_chg_1d'] = float(chg_1d) if chg_1d is not None else None
+        node['net_mv_chg_1w'] = float(chg_1w) if chg_1w is not None else None
+
+    # 2) 品种级全市场字段
+    for code, node in varieties.items():
+        mkt = mkt_latest_rows.get(code)
+        if mkt is None:
+            continue
+        volume, oi, vol = mkt
+        hist = mkt_hist.get(code, {})
+        node['volatility'] = vol
+        node['vol_pctl'] = percentile_rank(hist.get('vol', []), vol)
+        node['total_oi'] = oi
+        node['oi_share'] = oi / oi_mkt_total if oi_mkt_total else None
+        node['oi_pctl'] = percentile_rank(hist.get('oi', []), oi)
+        node['total_volume'] = volume
+        node['volume_share'] = volume / volume_mkt_total if volume_mkt_total else None
+        node['volume_pctl'] = percentile_rank(hist.get('volume', []), volume)
+
+    # 3) 合约级全市场字段（仅期货合约可映射）
+    def contract_key(code):
+        m = re.match(r'^([A-Za-z]+)(\d+)$', code)
+        return (m.group(1) + m.group(2)).upper() if m else None
+
+    for variety_node in varieties.values():
+        for node in variety_node['children']:
+            key = contract_key(node['code'])
+            if not key:
+                continue
+            ct = ct_latest_rows.get(key)
+            if ct is None:
+                continue
+            volume, oi, vol = ct
+            hist = ct_hist.get(key, {})
+            node['volatility'] = vol
+            node['vol_pctl'] = percentile_rank(hist.get('vol', []), vol)
+            node['total_oi'] = oi
+            node['oi_share'] = oi / oi_ct_total if oi_ct_total else None
+            node['oi_pctl'] = percentile_rank(hist.get('oi', []), oi)
+            node['total_volume'] = volume
+            node['volume_share'] = volume / volume_ct_total if volume_ct_total else None
+            node['volume_pctl'] = percentile_rank(hist.get('volume', []), volume)
+
+    # 4) 板块级：聚合子品种
+    for sector_node in sectors.values():
+        oi_sum = sum(v['total_oi'] or 0 for v in sector_node['children'])
+        vol_sum = sum(v['total_volume'] or 0 for v in sector_node['children'])
+        sector_node['total_oi'] = oi_sum or None
+        sector_node['total_volume'] = vol_sum or None
+        sector_node['oi_share'] = oi_sum / oi_mkt_total if oi_mkt_total else None
+        sector_node['volume_share'] = vol_sum / volume_mkt_total if volume_mkt_total else None
+        # 波动率按持仓量加权平均
+        weighted = [(v['volatility'], v['total_oi'] or 0) for v in sector_node['children'] if v['volatility'] is not None]
+        w_sum = sum(w for _, w in weighted)
+        sector_node['volatility'] = sum(vol * w for vol, w in weighted) / w_sum if w_sum else None
+
+    def sort_nodes(nodes):
+        nodes.sort(key=lambda n: -(n['total_oi'] or 0))
+        for child in nodes:
+            sort_nodes(child['children'])
+
+    tree = list(sectors.values())
+    sort_nodes(tree)
+
+    return Response({
+        'trade_date': bk_latest.isoformat() if bk_latest else None,
+        'market_date': mkt_latest.isoformat() if mkt_latest else None,
+        'rows': tree,
     })
 
 
