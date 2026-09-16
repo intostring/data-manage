@@ -182,6 +182,7 @@ const modules = [
       { name: 'display-position-sector-analysis', label: '板块分析', path: '/display/position/sector-analysis' },
       { name: 'display-position-sector-detail', label: '板块持仓明细', path: '/display/position/sector-detail' },
       { name: 'display-position-sector-overview', label: '板块持仓概览', path: '/display/position/sector-overview' },
+      { name: 'display-position-variety-advisor-long-short', label: '品种投顾多空', path: '/display/position/variety-advisor-long-short' },
     ],
   },
   {
@@ -190,6 +191,7 @@ const modules = [
     path: '/display/trade',
     icon: ArrowLeftRight,
     children: [
+      { name: 'display-trade-advisor-overview', label: '投顾交易概况', path: '/display/trade/advisor-overview' },
       { name: 'display-sector-contract-kline', label: '合约K线', path: '/display/sector/contract-kline' },
     ],
   },
@@ -208,7 +210,9 @@ const titleMap = {
   'display-position-sector-analysis': '板块分析',
   'display-position-sector-detail': '板块持仓明细',
   'display-position-sector-overview': '板块持仓概览',
+  'display-position-variety-advisor-long-short': '品种投顾多空',
   'display-trade': '交易分析',
+  'display-trade-advisor-overview': '投顾交易概况',
   'display-risk': '风险控制',
   'display-strategy': '策略分析',
 }

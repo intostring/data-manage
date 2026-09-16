@@ -156,6 +156,33 @@
                 <span class="sector-sort-mark" :class="{ on: sortKey === col.key }">
                   {{ sortKey === col.key ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}
                 </span>
+                <button
+                  v-if="col.key === 'symbol_name'"
+                  type="button"
+                  class="sector-col-filter-btn"
+                  :class="{ on: varietyFilterActive }"
+                  @click.stop="varietyFilterOpen = !varietyFilterOpen"
+                >
+                  ▾
+                </button>
+                <div
+                  v-if="col.key === 'symbol_name' && varietyFilterOpen"
+                  class="sector-col-filter"
+                  @click.stop
+                >
+                  <div class="sector-col-filter-actions">
+                    <button type="button" @click="selectAllVarieties">全选</button>
+                    <button type="button" @click="clearVarieties">清空</button>
+                  </div>
+                  <label
+                    v-for="item in varietyOptions"
+                    :key="item"
+                    class="sector-col-filter-item"
+                  >
+                    <input v-model="selectedVarieties" type="checkbox" :value="item" @change="currentPage = 1">
+                    <span>{{ item }}</span>
+                  </label>
+                </div>
               </th>
             </tr>
           </thead>
@@ -260,6 +287,8 @@ const sortDir = ref('desc')
 const currentPage = ref(1)
 const pageSize = ref(20)
 const jumpPage = ref('')
+const varietyFilterOpen = ref(false)
+const selectedVarieties = ref([])
 const today = new Date()
 const oneMonthAgo = new Date(today)
 oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1)
@@ -318,6 +347,16 @@ const columns = [
 
 const textSortKeys = new Set(['advisor_name', 'symbol_name'])
 
+const varietyOptions = computed(() => {
+  const names = detailRows.value
+    .map((row) => row.symbol_name || '—')
+    .filter(Boolean)
+  return [...new Set(names)].sort((a, b) => String(a).localeCompare(String(b), 'zh-CN'))
+})
+const varietyFilterActive = computed(() =>
+  varietyOptions.value.length > 0 && selectedVarieties.value.length < varietyOptions.value.length
+)
+
 const sortedRows = computed(() => {
   const key = sortKey.value
   const dir = sortDir.value === 'asc' ? 1 : -1
@@ -333,9 +372,13 @@ const sortedRows = computed(() => {
   })
 })
 
-const filteredRows = computed(() =>
-  onlyHolding.value ? sortedRows.value.filter((row) => row.has_position) : sortedRows.value
-)
+const filteredRows = computed(() => {
+  const selected = new Set(selectedVarieties.value)
+  const byVariety = varietyFilterActive.value
+    ? sortedRows.value.filter((row) => selected.has(row.symbol_name || '—'))
+    : sortedRows.value
+  return onlyHolding.value ? byVariety.filter((row) => row.has_position) : byVariety
+})
 
 const totalPages = computed(() => Math.max(Math.ceil(filteredRows.value.length / pageSize.value), 1))
 const pagedRows = computed(() => {
@@ -525,6 +568,16 @@ function toggleSort(key) {
   currentPage.value = 1
 }
 
+function selectAllVarieties() {
+  selectedVarieties.value = [...varietyOptions.value]
+  currentPage.value = 1
+}
+
+function clearVarieties() {
+  selectedVarieties.value = []
+  currentPage.value = 1
+}
+
 function selectWindow(key) {
   if (selectedWindow.value === key) return
   selectedWindow.value = key
@@ -584,6 +637,11 @@ watch(() => route.query.variety, (code) => {
 })
 
 watch(onlyHolding, () => {
+  currentPage.value = 1
+})
+
+watch(varietyOptions, (options) => {
+  selectedVarieties.value = [...options]
   currentPage.value = 1
 })
 
@@ -932,6 +990,7 @@ watch(totalPages, (total) => {
 }
 
 .sector-sort-th {
+  position: relative;
   cursor: pointer;
   user-select: none;
 }
@@ -951,6 +1010,85 @@ watch(totalPages, (total) => {
 
 .sector-sort-mark.on {
   color: var(--brass);
+}
+
+.sector-col-filter-btn {
+  width: 18px;
+  height: 18px;
+  margin-left: 4px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: #F7F4EC;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.sector-col-filter-btn.on {
+  border-color: var(--brass);
+  color: var(--brass);
+  background: rgba(151, 121, 62, 0.12);
+}
+
+.sector-col-filter {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  z-index: 30;
+  width: 190px;
+  max-height: 260px;
+  padding: 8px;
+  overflow-y: auto;
+  transform: translateX(-50%);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--card);
+  box-shadow: 0 10px 24px rgba(28, 34, 40, 0.14);
+  color: var(--ink);
+  text-align: left;
+  cursor: default;
+}
+
+.sector-col-filter-actions {
+  display: flex;
+  gap: 6px;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sector-col-filter-actions button {
+  flex: 1;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: #F7F4EC;
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sector-col-filter-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 4px;
+  border-radius: 3px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.sector-col-filter-item:hover {
+  background: #F7F4EC;
+}
+
+.sector-col-filter-item input {
+  margin: 0;
 }
 
 .sector-table td:nth-child(n+4) {

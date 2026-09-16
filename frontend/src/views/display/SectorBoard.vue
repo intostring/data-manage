@@ -177,6 +177,11 @@ onMounted(fetchRanking)
   border-radius: 4px;
 }
 
+.pnr-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
 .pnr-table thead th {
   position: sticky;
   top: 0;
@@ -190,11 +195,19 @@ onMounted(fetchRanking)
   padding: 9px 12px;
 }
 
-.pnr-table td:nth-child(3) {
-  text-align: right;
+.pnr-table th:nth-child(1),
+.pnr-table td:nth-child(1) {
+  width: 60px;
 }
 
-.pnr-table th:nth-child(3) {
+.pnr-table th:nth-child(2),
+.pnr-table td:nth-child(2) {
+  width: 150px;
+}
+
+.pnr-table th:nth-child(3),
+.pnr-table td:nth-child(3) {
+  width: 140px;
   text-align: right;
 }
 
@@ -236,10 +249,6 @@ onMounted(fetchRanking)
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--muted);
-}
-
-.pnr-bar-col {
-  width: 34%;
 }
 
 .pnr-bar-track {

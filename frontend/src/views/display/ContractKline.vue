@@ -129,6 +129,13 @@
             <span>收 <em>{{ fmtNumber(hoverPoint.close) }}</em></span>
             <span>成交量 <em>{{ fmtNumber(hoverPoint.vol) }}</em></span>
             <span>持仓量 <em>{{ fmtNumber(hoverPoint.oi) }}</em></span>
+            <div v-if="hoverPoint.trades.length" class="ck-tooltip-trades">
+              <i>交易</i>
+              <span v-for="trade in hoverPoint.trades" :key="`${trade.side}-${trade.open_close}`">
+                {{ trade.label }}
+                <em>{{ trade.trade_count || 0 }}笔 / {{ fmtNumber(trade.trade_qty) }}手 / {{ fmtNumber(trade.avg_price) }}</em>
+              </span>
+            </div>
           </div>
         </div>
         <div v-else class="ck-empty">暂无该合约K线数据</div>
@@ -357,6 +364,26 @@ const tradeMarkers = computed(() => {
     .filter(Boolean)
 })
 
+const tradeSummaryByDate = computed(() => {
+  const result = new Map()
+  for (const row of markerRows.value) {
+    if (!row.date) continue
+    const list = result.get(row.date) || []
+    const side = row.side || '—'
+    const openClose = row.open_close || '—'
+    list.push({
+      ...row,
+      label: `${side}${openClose}`,
+      order: tradeTooltipOrder(side, openClose),
+    })
+    result.set(row.date, list)
+  }
+  for (const list of result.values()) {
+    list.sort((a, b) => a.order - b.order)
+  }
+  return result
+})
+
 const priceTicks = computed(() => {
   const ticks = []
   const { min, max } = priceDomain.value
@@ -373,10 +400,22 @@ const hoverPoint = computed(() => {
   if (!point) return null
   return {
     ...point,
+    trades: tradeSummaryByDate.value.get(point.date) || [],
     tooltipX: Math.min(Math.max(point.x + 10, 70), 800),
     tooltipY: point.highY < 120 ? point.highY + 16 : point.highY - 96,
   }
 })
+
+function tradeTooltipOrder(side, openClose) {
+  const text = `${side || ''}${openClose || ''}`
+  if (text.includes('买') && text.includes('开')) return 1
+  if (text.includes('卖') && text.includes('开')) return 2
+  if (text.includes('买') && text.includes('平')) return 3
+  if (text.includes('卖') && text.includes('平')) return 4
+  if (text.includes('买')) return 5
+  if (text.includes('卖')) return 6
+  return 9
+}
 
 function priceY(value) {
   const { min, max } = priceDomain.value
@@ -820,6 +859,21 @@ watch(() => [route.query.contract, route.query.account, route.query.window, rout
   font-style: normal;
   color: #fff;
   font-family: var(--mono);
+}
+
+.ck-tooltip-trades {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.ck-tooltip-trades i {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 11px;
+  font-style: normal;
 }
 
 .ck-empty {

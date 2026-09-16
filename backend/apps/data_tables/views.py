@@ -557,12 +557,31 @@ def sector_contract_kline(request):
         return Response({'detail': '自定义日期范围无效'}, status=400)
 
     code = contract.upper()
+    code_base = re.sub(r'\.[A-Z]+$', '', code)
+    code_key = code_base.replace('-', '')
+    option_match = re.match(r'^([A-Z]+)(\d{3,4})-?([CP])-?(\d+)$', code_base)
+    is_option_contract = bool(option_match)
+    market_codes = {code_base, code_key}
+    if option_match:
+        opt_symbol, opt_month, opt_type, opt_strike = option_match.groups()
+        market_codes.add(f'{opt_symbol}{opt_month}-{opt_type}-{opt_strike}')
+        market_codes.add(f'{opt_symbol}{opt_month}{opt_type}{opt_strike}')
+    market_codes = [item for item in market_codes if item]
+    exchange_suffixes = ['', '.DCE', '.SHF', '.SHFE', '.CZCE', '.CZC', '.INE', '.GFEX', '.CFFEX', '.CFX']
+    market_ts_codes = []
+    for item in market_codes:
+        market_ts_codes.extend(f'{item}{suffix}' for suffix in exchange_suffixes)
+    market_ts_codes = list(dict.fromkeys(market_ts_codes))
+    contract_candidates = set(market_codes)
+    contract_candidates.add(contract.strip())
+    contract_candidates.update(item.lower() for item in list(contract_candidates))
+    contract_candidates = [item for item in contract_candidates if item]
     trade_page = max(int(request.query_params.get('trade_page', 1) or 1), 1)
     trade_page_size = min(max(int(request.query_params.get('trade_page_size', 20) or 20), 1), 100)
     offset = (trade_page - 1) * trade_page_size
     with connection.cursor() as cursor:
-        cursor.execute(
-            """
+        ts_placeholders = ','.join(['%s'] * len(market_ts_codes))
+        market_sql = f"""
             SELECT
                 ts_code,
                 trade_date,
@@ -573,27 +592,68 @@ def sector_contract_kline(request):
                 vol,
                 amount,
                 oi
-            FROM fut_market_data
-            WHERE UPPER(ts_code) = %s
-               OR UPPER(ts_code) LIKE %s
+            FROM {{table}}
+            WHERE ts_code IN ({ts_placeholders})
             ORDER BY trade_date
-            """,
-            [code, f'{code}.%'],
-        )
-        rows = [
-            {
-                'ts_code': row[0],
-                'date': row[1].isoformat() if row[1] else None,
-                'open': row[2],
-                'high': row[3],
-                'low': row[4],
-                'close': row[5],
-                'vol': row[6],
-                'amount': row[7],
-                'oi': row[8],
-            }
-            for row in cursor.fetchall()
-        ]
+        """
+
+        def fetch_market_rows(table):
+            cursor.execute(market_sql.format(table=table), market_ts_codes)
+            fetched = [
+                {
+                    'ts_code': row[0],
+                    'date': row[1].isoformat() if row[1] else None,
+                    'open': row[2],
+                    'high': row[3],
+                    'low': row[4],
+                    'close': row[5],
+                    'vol': row[6],
+                    'amount': row[7],
+                    'oi': row[8],
+                }
+                for row in cursor.fetchall()
+            ]
+            if fetched:
+                return fetched
+            cursor.execute(
+                f"""
+                SELECT
+                    ts_code,
+                    trade_date,
+                    open,
+                    high,
+                    low,
+                    close,
+                    vol,
+                    amount,
+                    oi
+                FROM {table}
+                WHERE ts_code LIKE %s
+                ORDER BY trade_date
+                """,
+                [f'{code_base}.%'],
+            )
+            return [
+                {
+                    'ts_code': row[0],
+                    'date': row[1].isoformat() if row[1] else None,
+                    'open': row[2],
+                    'high': row[3],
+                    'low': row[4],
+                    'close': row[5],
+                    'vol': row[6],
+                    'amount': row[7],
+                    'oi': row[8],
+                }
+                for row in cursor.fetchall()
+            ]
+
+        market_tables = ['opt_market_data', 'fut_market_data'] if is_option_contract else ['fut_market_data', 'opt_market_data']
+        rows = []
+        for table in market_tables:
+            rows = fetch_market_rows(table)
+            if rows:
+                break
         if rows:
             latest_trade_date = parse_date(rows[-1]['date'])
             if window == 'custom':
@@ -614,18 +674,18 @@ def sector_contract_kline(request):
                     and (not filter_end or parse_date(row['date']) <= filter_end)
                 ]
         cursor.execute(
-            """
+            f"""
             SELECT COUNT(*)
             FROM rh_trades
-            WHERE UPPER(contract) = %s
+            WHERE contract IN ({','.join(['%s'] * len(contract_candidates))})
               AND account = %s
             """,
-            [code, account],
+            [*contract_candidates, account],
         )
         trade_count = cursor.fetchone()[0]
 
         cursor.execute(
-            """
+            f"""
             SELECT
                 r.trade_date,
                 r.trade_time,
@@ -642,12 +702,12 @@ def sector_contract_kline(request):
                 r.daily_close_profit
             FROM rh_trades r
             LEFT JOIN mom_account_record m ON m.account_id = r.account
-            WHERE UPPER(r.contract) = %s
+            WHERE r.contract IN ({','.join(['%s'] * len(contract_candidates))})
               AND r.account = %s
             ORDER BY r.trade_date DESC, r.trade_time DESC, r.id DESC
             LIMIT %s OFFSET %s
             """,
-            [code, account, trade_page_size, offset],
+            [*contract_candidates, account, trade_page_size, offset],
         )
         trade_rows = [
             {
@@ -681,12 +741,12 @@ def sector_contract_kline(request):
                     ELSE SUM(COALESCE(trade_price, 0) * COALESCE(trade_qty, 0)) / SUM(COALESCE(trade_qty, 0))
                 END AS avg_price
             FROM rh_trades
-            WHERE UPPER(contract) = %s
+            WHERE contract IN ({','.join(['%s'] * len(contract_candidates))})
             {'AND account = %s' if account else ''}
             GROUP BY trade_date, COALESCE(side, ''), COALESCE(open_close, '')
             ORDER BY trade_date, side, open_close
             """,
-            [code, account] if account else [code],
+            [*contract_candidates, account] if account else contract_candidates,
         )
         marker_rows = [
             {
@@ -753,26 +813,25 @@ def sector_advisor_variety(request):
         else:
             advisor_name = account
 
-        # 品种：代码精确命中或代码/简称模糊匹配
+        # 品种：代码精确命中或代码/简称模糊匹配（用 fut_symbol_info 小表，避免扫大表）
         like_variety = f'%{variety}%'
         cursor.execute(
             """
-            SELECT variety_code, variety_name
-            FROM (
-                SELECT variety_code, variety_name
-                FROM yl_perf_variety_pnl_trend
-                WHERE calc_window = 'std'
-                  AND (variety_code = %s OR variety_name = %s OR variety_code LIKE %s OR variety_name LIKE %s)
-                GROUP BY variety_code, variety_name
-                ORDER BY (variety_code = %s) DESC, variety_code
-                LIMIT 1
-            ) v
+            SELECT symbol_code, symbol_name
+            FROM fut_symbol_info
+            WHERE symbol_code = %s OR symbol_name = %s OR symbol_code LIKE %s OR symbol_name LIKE %s
+            ORDER BY (symbol_code = %s) DESC, symbol_code
+            LIMIT 1
             """,
-            [variety, variety, like_variety, like_variety, variety],
+            [variety.upper(), variety, like_variety, like_variety, variety.upper()],
         )
         variety_row = cursor.fetchone()
         if variety_row:
-            variety = variety_row[0]
+            variety_code = variety_row[0].upper()
+            variety_name = variety_row[1]
+        else:
+            variety_code = variety.upper()
+            variety_name = variety
 
         cursor.execute(
             """
@@ -785,11 +844,11 @@ def sector_advisor_variety(request):
             FROM yl_perf_variety_pnl_trend t
             WHERE t.calc_window = 'std'
               AND t.account = %s
-              AND (t.variety_code = %s OR t.variety_name = %s)
+              AND t.variety_code = %s
             GROUP BY t.trade_date
             ORDER BY t.trade_date
             """,
-            [account, variety, variety],
+            [account, variety_code],
         )
         chart_rows = [
             {
@@ -801,34 +860,44 @@ def sector_advisor_variety(request):
             }
             for row in cursor.fetchall()
         ]
-        selected_variety_code = chart_rows[-1]['symbol_code'] if chart_rows else variety
-        selected_variety_name = chart_rows[-1]['symbol_name'] if chart_rows else variety
+        selected_variety_code = chart_rows[-1]['symbol_code'] if chart_rows else variety_code
+        selected_variety_name = chart_rows[-1]['symbol_name'] if chart_rows else variety_name
 
         # 该投顾在该品种的每日持仓金额（多空合计）与单边敞口（轧差）
+        # 先取出该账户在该品种的 pid，再用 pid 查持仓（避免 IN 子查询扫大表）
         cursor.execute(
             """
-            SELECT
-                p.trade_date,
-                SUM(COALESCE(p.more_market_value, 0) + COALESCE(p.empty_market_value, 0)) AS position_value,
-                SUM(COALESCE(p.more_market_value, 0) - COALESCE(p.empty_market_value, 0)) AS net_value
-            FROM perf_variety_position_detail p
-            WHERE p.variety = %s
-              AND p.pid IN (
-                  SELECT DISTINCT pid
-                  FROM yl_perf_variety_pnl_trend
-                  WHERE calc_window = 'std'
-                    AND account = %s
-                    AND (variety_code = %s OR variety_name = %s)
-              )
-            GROUP BY p.trade_date
-            ORDER BY p.trade_date
+            SELECT DISTINCT pid
+            FROM yl_perf_variety_pnl_trend
+            WHERE calc_window = 'std'
+              AND account = %s
+              AND variety_code = %s
             """,
-            [selected_variety_name, account, variety, variety],
+            [account, variety_code],
         )
-        position_by_date = {
-            (row[0].isoformat() if row[0] else None): (float(row[1] or 0), float(row[2] or 0))
-            for row in cursor.fetchall()
-        }
+        pids = [row[0] for row in cursor.fetchall()]
+
+        position_by_date = {}
+        if pids:
+            placeholders = ','.join(['%s'] * len(pids))
+            cursor.execute(
+                f"""
+                SELECT
+                    p.trade_date,
+                    SUM(COALESCE(p.more_market_value, 0) + COALESCE(p.empty_market_value, 0)) AS position_value,
+                    SUM(COALESCE(p.more_market_value, 0) - COALESCE(p.empty_market_value, 0)) AS net_value
+                FROM perf_variety_position_detail p
+                WHERE p.variety = %s
+                  AND p.pid IN ({placeholders})
+                GROUP BY p.trade_date
+                ORDER BY p.trade_date
+                """,
+                [selected_variety_name, *pids],
+            )
+            position_by_date = {
+                (row[0].isoformat() if row[0] else None): (float(row[1] or 0), float(row[2] or 0))
+                for row in cursor.fetchall()
+            }
         for item in chart_rows:
             value, net_value = position_by_date.get(item['date'], (None, None))
             item['position_value'] = value if value is not None and value > 0 else None
@@ -919,18 +988,16 @@ def sector_pnl(request):
     stat_window = 'std' if is_custom else window
 
     with connection.cursor() as cursor:
-        filters = ['s.calc_window = %s']
-        params = [stat_window]
-        if variety:
-            filters.append('(s.variety_code = %s OR s.variety_name = %s)')
-            params.extend([variety, variety])
-        where_sql = ' AND '.join(filters)
+        # 统一品种代码（兼容传入名称）
+        cursor.execute(
+            'SELECT symbol_code FROM fut_symbol_info WHERE symbol_code = %s OR symbol_name = %s LIMIT 1',
+            [variety.upper(), variety],
+        )
+        code_row = cursor.fetchone()
+        variety_code = code_row[0].upper() if code_row else variety.upper()
 
-        trend_filters = ['t.calc_window = %s']
-        trend_params = [stat_window]
-        if variety:
-            trend_filters.append('(t.variety_code = %s OR t.variety_name = %s)')
-            trend_params.extend([variety, variety])
+        trend_filters = ['t.calc_window = %s', 't.variety_code = %s']
+        trend_params = [stat_window, variety_code]
         if is_custom:
             trend_filters.append('t.trade_date BETWEEN %s AND %s')
             trend_params.extend([start_date, end_date])
@@ -963,7 +1030,7 @@ def sector_pnl(request):
             }
             for row in cursor.fetchall()
         ]
-        selected_variety_code = chart_rows[-1]['symbol_code'] if chart_rows else variety
+        selected_variety_code = chart_rows[-1]['symbol_code'] if chart_rows else variety_code
         selected_variety_name = chart_rows[-1]['symbol_name'] if chart_rows else variety
 
         # 品种每日持仓金额（多空市值合计）与单边敞口（轧差市值 = 多头 - 空头）
@@ -994,11 +1061,47 @@ def sector_pnl(request):
             item['position_value'] = value if value is not None and value > 0 else None
             item['net_position_value'] = net_value if net_value is not None and net_value != 0 else None
 
-        pnl_date_filters = ''
-        pnl_date_params = []
+        # 最新一期日期（一次性取出，避免相关子查询反复扫描大表）
+        latest_filters = ['calc_window = %s']
+        latest_params = [stat_window]
         if is_custom:
-            pnl_date_filters = ' AND trade_date BETWEEN %s AND %s'
-            pnl_date_params = [start_date, end_date]
+            latest_filters.append('trade_date BETWEEN %s AND %s')
+            latest_params.extend([start_date, end_date])
+        cursor.execute(
+            f"SELECT MAX(trade_date) FROM yl_perf_variety_pnl_trend WHERE {' AND '.join(latest_filters)}",
+            latest_params,
+        )
+        pnl_latest = cursor.fetchone()[0]
+
+        # 账户总盈利 + 该品种盈利：合并为一次扫描
+        pnl_by_account = {}
+        if pnl_latest:
+            cursor.execute(
+                """
+                SELECT account,
+                       SUM(COALESCE(accum_pl_value, 0)) AS total_pnl,
+                       SUM(CASE WHEN variety_code = %s THEN COALESCE(accum_pl_value, 0) ELSE 0 END) AS variety_pnl
+                FROM yl_perf_variety_pnl_trend
+                WHERE calc_window = %s AND trade_date = %s
+                GROUP BY account
+                """,
+                [variety_code, stat_window, pnl_latest],
+            )
+            pnl_by_account = {
+                r[0]: (float(r[1] or 0), float(r[2] or 0))
+                for r in cursor.fetchall()
+            }
+
+        # 当前持仓 pid（一次性取出最新日期）
+        cursor.execute(
+            'SELECT MAX(trade_date) FROM perf_variety_position_detail WHERE variety = %s',
+            [selected_variety_name],
+        )
+        pos_latest = cursor.fetchone()[0]
+
+        filters = ['s.calc_window = %s', 's.variety_code = %s']
+        params = [stat_window, variety_code]
+        where_sql = ' AND '.join(filters)
 
         cursor.execute(
             f"""
@@ -1008,7 +1111,6 @@ def sector_pnl(request):
                 CASE WHEN p.pid IS NULL THEN 0 ELSE 1 END AS has_position,
                 s.variety_code,
                 s.variety_name,
-                pnl.cumulative_profit_loss,
                 s.trade_amount,
                 s.trade_qty_avg,
                 s.trade_amount_avg,
@@ -1020,9 +1122,7 @@ def sector_pnl(request):
                 s.loss_max,
                 s.margin_rate,
                 CASE WHEN COALESCE(tt.total_trade_amount, 0) > 0
-                     THEN s.trade_amount / tt.total_trade_amount ELSE NULL END AS trade_amount_ratio,
-                CASE WHEN tp.total_profit_loss IS NOT NULL AND tp.total_profit_loss <> 0
-                     THEN pnl.cumulative_profit_loss / tp.total_profit_loss ELSE NULL END AS profit_ratio
+                     THEN s.trade_amount / tt.total_trade_amount ELSE NULL END AS trade_amount_ratio
             FROM yl_perf_trade_variety_stat s
             LEFT JOIN mom_account_record m ON m.account_id = s.account
             LEFT JOIN (
@@ -1032,42 +1132,10 @@ def sector_pnl(request):
                 GROUP BY account
             ) tt ON tt.account = s.account
             LEFT JOIN (
-                SELECT account, SUM(COALESCE(accum_pl_value, 0)) AS total_profit_loss
-                FROM yl_perf_variety_pnl_trend
-                WHERE calc_window = %s
-                  {pnl_date_filters}
-                  AND trade_date = (
-                      SELECT MAX(trade_date)
-                      FROM yl_perf_variety_pnl_trend
-                      WHERE calc_window = %s
-                        {pnl_date_filters}
-                  )
-                GROUP BY account
-            ) tp ON tp.account = s.account
-            LEFT JOIN (
-                SELECT account, SUM(COALESCE(accum_pl_value, 0)) AS cumulative_profit_loss
-                FROM yl_perf_variety_pnl_trend
-                WHERE calc_window = %s
-                  AND (variety_code = %s OR variety_name = %s)
-                  {pnl_date_filters}
-                  AND trade_date = (
-                      SELECT MAX(trade_date)
-                      FROM yl_perf_variety_pnl_trend
-                      WHERE calc_window = %s
-                        AND (variety_code = %s OR variety_name = %s)
-                        {pnl_date_filters}
-                  )
-                GROUP BY account
-            ) pnl ON pnl.account = s.account
-            LEFT JOIN (
                 SELECT pid
                 FROM perf_variety_position_detail
                 WHERE variety = %s
-                  AND trade_date = (
-                      SELECT MAX(trade_date)
-                      FROM perf_variety_position_detail
-                      WHERE variety = %s
-                  )
+                  AND trade_date = %s
                   AND (COALESCE(more_market_value, 0) <> 0 OR COALESCE(empty_market_value, 0) <> 0)
                 GROUP BY pid
             ) p ON p.pid = s.pid
@@ -1075,48 +1143,36 @@ def sector_pnl(request):
             ORDER BY COALESCE(s.trade_amount, 0) DESC
             LIMIT 500
             """,
-            [
-                stat_window,
-                stat_window,
-                *pnl_date_params,
-                stat_window,
-                *pnl_date_params,
-                stat_window,
-                variety,
-                variety,
-                *pnl_date_params,
-                stat_window,
-                variety,
-                variety,
-                *pnl_date_params,
-                selected_variety_name,
-                selected_variety_name,
-                *params,
-            ],
+            [stat_window, selected_variety_name, pos_latest, *params],
         )
-        detail_rows = [
-            {
+        detail_rows = []
+        for row in cursor.fetchall():
+            account = row[1]
+            total_pnl, variety_pnl = pnl_by_account.get(account, (None, None))
+            detail_rows.append({
                 'advisor_name': row[0],
-                'advisor_code': row[1],
+                'advisor_code': account,
                 'has_position': bool(row[2]),
                 'symbol_code': row[3],
                 'symbol_name': row[4],
-                'profit_loss': row[5],
-                'trade_amount': row[6],
-                'avg_daily_volume': row[7],
-                'avg_daily_amount': row[8],
-                'intraday_trade_ratio': row[9],
-                'turnover_rate': row[10],
-                'win_rate': row[11],
-                'profit_loss_ratio': row[12],
-                'max_profit': row[13],
-                'max_loss': row[14],
-                'margin_return_rate': row[15],
-                'total_ratio': float(row[16]) if row[16] is not None else None,
-                'profit_ratio': float(row[17]) if row[17] is not None else None,
-            }
-            for row in cursor.fetchall()
-        ]
+                'profit_loss': variety_pnl,
+                'trade_amount': row[5],
+                'avg_daily_volume': row[6],
+                'avg_daily_amount': row[7],
+                'intraday_trade_ratio': row[8],
+                'turnover_rate': row[9],
+                'win_rate': row[10],
+                'profit_loss_ratio': row[11],
+                'max_profit': row[12],
+                'max_loss': row[13],
+                'margin_return_rate': row[14],
+                'total_ratio': float(row[15]) if row[15] is not None else None,
+                'profit_ratio': (
+                    variety_pnl / total_pnl
+                    if variety_pnl is not None and total_pnl not in (None, 0)
+                    else None
+                ),
+            })
 
         latest_date = chart_rows[-1]['date'] if chart_rows else None
 
@@ -1129,6 +1185,228 @@ def sector_pnl(request):
         'latest_date': latest_date,
         'chart_rows': chart_rows,
         'detail_rows': detail_rows,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def advisor_trade_overview(request):
+    """主观投顾交易品种统计：投顾 × 品种矩阵（成交额/保证金及占比）。
+
+    参考 calc_rh_trade.py 逻辑：
+    - 投顾筛选：当前运行（status='启用', is_stop=0），account_tag IN(1,2), invest_logic='主观'，同名去重取 create_time 最早
+    - 成交额：rh_trades 按 (account, contract) 聚合 trade_amount
+    - 保证金率：rh_positions 各合约最新 margin/market_value
+    - 保证金 = 成交额 × 保证金率
+    - 品种代码：合约首字母大写前缀，期权合约过滤
+    - 板块结构：fut_symbol_info 的 symbol_cate_l1(大类)/symbol_cate(子类)
+    """
+    mode = request.query_params.get('mode', 'margin_share')
+    window = request.query_params.get('window', 'std')
+    allowed_modes = {'turnover', 'turnover_share', 'margin', 'margin_share'}
+    allowed_windows = {'day', '1m', '3m', '1y', 'std'}
+    if mode not in allowed_modes:
+        return Response({'detail': 'mode 参数无效'}, status=400)
+    if window not in allowed_windows:
+        return Response({'detail': 'window 参数无效'}, status=400)
+
+    l1_name_map = {'金属': '有色金属'}
+    sector_order = [
+        ('金融期货', ['股指期货', '国债期货']),
+        ('有色金属', ['贵金属', '传统有色', '新能源']),
+        ('农林产品', ['油脂油料', '农副产品', '软商品', '谷物', '林产品']),
+        ('黑色', ['煤炭', '黑色金属']),
+        ('能源化工', ['能源', '芳烃', '烯烃', '醇类及其他', '轻工制造']),
+        ('航运', ['集运']),
+    ]
+
+    with connection.cursor() as cursor:
+        # 品种 -> (名称, 子类, 大类)
+        cursor.execute('SELECT symbol_code, symbol_name, symbol_cate, symbol_cate_l1 FROM fut_symbol_info')
+        variety_meta = {}
+        for code, name, cate, l1 in cursor.fetchall():
+            if code:
+                variety_meta[code.upper()] = (name or code, cate, l1_name_map.get(l1, l1))
+
+        # 投顾筛选 + 同名去重（create_time 最早）
+        cursor.execute(
+            """
+            SELECT account_id, account_name, create_time
+            FROM mom_account_record
+            WHERE is_stop = 0 AND account_tag IN (1, 2) AND invest_logic = '主观' AND status = '启用'
+            ORDER BY create_time
+            """
+        )
+        advisors = []
+        seen_names = set()
+        for account_id, name, create_time in cursor.fetchall():
+            if name in seen_names:
+                continue
+            seen_names.add(name)
+            advisors.append({'account_id': account_id, 'name': name or account_id, 'create_time': create_time})
+        if not advisors:
+            return Response({'detail': '暂无主观投顾'}, status=404)
+
+        account_ids = [a['account_id'] for a in advisors]
+        ph = ','.join(['%s'] * len(account_ids))
+
+        # 时间区间
+        cursor.execute('SELECT MAX(trade_date) FROM rh_trades')
+        latest = cursor.fetchone()[0]
+        if not latest:
+            return Response({'detail': '暂无成交数据'}, status=404)
+        if window == 'day':
+            start = end = latest
+        elif window == '1m':
+            start, end = latest - timedelta(days=30), latest
+        elif window == '3m':
+            start, end = latest - timedelta(days=90), latest
+        elif window == '1y':
+            start, end = latest - timedelta(days=365), latest
+        else:
+            start = end = None
+
+        # 成交额聚合（account, contract，不带 trade_date 维度以加速）
+        if start is not None:
+            cursor.execute(
+                f"""
+                SELECT account, contract, SUM(COALESCE(trade_amount, 0))
+                FROM rh_trades
+                WHERE account IN ({ph}) AND trade_date BETWEEN %s AND %s
+                GROUP BY account, contract
+                """,
+                [*account_ids, start, end],
+            )
+        else:
+            # 成立以来：全历史聚合（不再按 create_time 过滤——部分账户 create_time 字段不准确会误删历史成交）
+            cursor.execute(
+                f"""
+                SELECT account, contract, SUM(COALESCE(trade_amount, 0))
+                FROM rh_trades
+                WHERE account IN ({ph})
+                GROUP BY account, contract
+                """,
+                account_ids,
+            )
+        trade_rows = cursor.fetchall()
+
+        # 保证金率原始数据（各合约最新交易日 margin/market_value），后按品种聚合
+        cursor.execute(
+            """
+            SELECT contract, margin, market_value
+            FROM rh_positions
+            WHERE trade_date = (SELECT MAX(trade_date) FROM rh_positions)
+            """
+        )
+        margin_rows = cursor.fetchall()
+
+    def extract_variety(contract):
+        text = str(contract or '').strip()
+        if not re.fullmatch(r'[A-Za-z]+\d+', text):
+            return None
+        return re.match(r'[A-Za-z]+', text).group(0).upper()
+
+    # 保证金率按品种聚合（margin / market_value 求和），已到期合约也能按品种取到保证金率
+    margin_sum = {}
+    mv_sum = {}
+    for contract, mg, mv in margin_rows:
+        vc = extract_variety(contract)
+        if vc is None:
+            continue
+        mg_f = float(mg or 0)
+        mv_f = float(mv or 0)
+        if mg_f <= 0 or mv_f <= 0:
+            continue
+        margin_sum[vc] = margin_sum.get(vc, 0.0) + mg_f
+        mv_sum[vc] = mv_sum.get(vc, 0.0) + mv_f
+    margin_rate = {vc: margin_sum[vc] / mv_sum[vc] for vc in margin_sum if mv_sum.get(vc, 0) > 0}
+
+    # 聚合：投顾 × 品种 的成交额与保证金
+    turnover = {}
+    margin = {}
+    for account, contract, amount in trade_rows:
+        variety_code = extract_variety(contract)
+        if variety_code is None:
+            continue
+        key = (account, variety_code)
+        amt = float(amount or 0)
+        turnover[key] = turnover.get(key, 0.0) + amt
+        margin[key] = margin.get(key, 0.0) + amt * margin_rate.get(variety_code, 0.0)
+
+    # 构建列（板块结构 + 合计列）
+    columns = []
+    for l1, sub_cates in sector_order:
+        l1_members = []
+        for sub in sub_cates:
+            sub_members = sorted(
+                [code for code, (name, cate, l1v) in variety_meta.items() if cate == sub and l1v == l1]
+            )
+            l1_members.extend(sub_members)
+            if len(sub_members) > 1:
+                columns.append({
+                    'key': f'L2:{sub}', 'l1': l1, 'l2': sub, 'code': '', 'name': f'{sub}合计',
+                    'agg': 'l2', 'members': sub_members,
+                })
+            for code in sub_members:
+                name = variety_meta[code][0]
+                columns.append({
+                    'key': code, 'l1': l1, 'l2': sub, 'code': code, 'name': name,
+                    'agg': '', 'members': [code],
+                })
+        if len(l1_members) > 1:
+            columns.append({
+                'key': f'L1:{l1}', 'l1': l1, 'l2': '', 'code': '', 'name': f'{l1}合计',
+                'agg': 'l1', 'members': l1_members,
+            })
+
+    # 金额/占比矩阵
+    rows = []
+    for advisor in advisors:
+        account = advisor['account_id']
+        amounts = {}
+        total = 0.0
+        for code in variety_meta:
+            amt = turnover.get((account, code), 0.0) if mode in ('turnover', 'turnover_share') else margin.get((account, code), 0.0)
+            amounts[code] = amt
+            total += amt
+        values = {}
+        variety_count = 0
+        for col in columns:
+            if col['agg']:
+                val = sum(amounts.get(m, 0.0) for m in col['members'])
+            else:
+                val = amounts.get(col['code'], 0.0)
+            if mode in ('turnover_share', 'margin_share'):
+                val = val / total if total else 0.0
+            values[col['key']] = val
+        for code in variety_meta:
+            if amounts.get(code, 0.0) > 1.0:
+                variety_count += 1
+        sector_count = 0
+        for l1, _sub in sector_order:
+            l1_total = sum(amounts.get(m, 0.0) for m in variety_meta if variety_meta.get(m, (None, None, None))[2] == l1)
+            if l1_total > 1.0:
+                sector_count += 1
+        rows.append({
+            'advisor_name': advisor['name'],
+            'account_id': account,
+            'start_time': str(advisor['create_time'])[:10] if advisor['create_time'] else None,
+            'sector_count': sector_count,
+            'variety_count': variety_count,
+            'values': values,
+        })
+
+    # 按品种数量降序排列投顾
+    rows.sort(key=lambda r: (-r['variety_count'], r['advisor_name']))
+
+    return Response({
+        'mode': mode,
+        'window': window,
+        'trade_date': latest.isoformat() if latest else None,
+        'columns': columns,
+        'rows': rows,
+        'advisor_count': len(rows),
+        'variety_count': len(variety_meta),
     })
 
 
@@ -1940,6 +2218,267 @@ def sector_board(request):
         'end_date': win_end.isoformat() if win_end else None,
         'index_series': index_series,
         'sector_rows': sector_rows,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def variety_advisor_long_short(request):
+    """品种维度的投顾多空数量热力表。"""
+    metric_keys = [
+        'net_long',
+        'net_short',
+        'add_long',
+        'reduce_long',
+        'long_to_short',
+        'add_short',
+        'reduce_short',
+        'short_to_long',
+    ]
+
+    def empty_metrics():
+        return {key: {'advisors_by_name': {}} for key in metric_keys}
+
+    def add_metric(metrics, key, advisor):
+        name = advisor.get('name') or advisor.get('account_code') or str(advisor.get('pid'))
+        bucket = metrics[key]['advisors_by_name']
+        current = bucket.get(name)
+        account_code = advisor.get('account_code')
+        pid = advisor.get('pid')
+        if current:
+            if account_code and account_code not in current['account_codes']:
+                current['account_codes'].append(account_code)
+            if pid is not None and pid not in current['pids']:
+                current['pids'].append(pid)
+            current['is_quant'] = current['is_quant'] or advisor.get('is_quant', False)
+            if current['is_quant']:
+                current['invest_logic'] = '量化'
+            current['account_code'] = '、'.join(current['account_codes'])
+            return
+
+        bucket[name] = {
+            'pid': pid,
+            'pids': [pid] if pid is not None else [],
+            'account_code': account_code,
+            'account_codes': [account_code] if account_code else [],
+            'name': name,
+            'invest_logic': advisor.get('invest_logic'),
+            'is_quant': advisor.get('is_quant', False),
+        }
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT DISTINCT trade_date
+            FROM rh_positions
+            WHERE trade_date IS NOT NULL
+            ORDER BY trade_date DESC
+            LIMIT 2
+            """
+        )
+        dates = [row[0] for row in cursor.fetchall()]
+        if not dates:
+            return Response({'detail': '暂无品种投顾多空数据'}, status=404)
+        latest_date = dates[0]
+        previous_date = dates[1] if len(dates) > 1 else None
+
+        cursor.execute('SELECT symbol_code, symbol_name FROM fut_symbol_info')
+        variety_name_by_code = {
+            str(code).upper(): name
+            for code, name in cursor.fetchall()
+            if code
+        }
+
+        option_pattern = re.compile(r'^([A-Za-z]+)(\d{3,4})-?([CP])-?(\d+)$')
+
+        def parse_contract(contract):
+            text = str(contract or '').strip()
+            option_match = option_pattern.match(text)
+            if option_match:
+                code, month, option_type, strike = option_match.groups()
+                code = code.upper()
+                return {
+                    'is_option': True,
+                    'variety_code': code,
+                    'variety': variety_name_by_code.get(code) or code,
+                    'option_type': option_type.upper(),
+                    'risk_keys': [
+                        f'{code}{month}{option_type.upper()}{strike}'.upper(),
+                        f'{code}2{month}{option_type.upper()}{strike}'.upper() if len(month) == 3 else None,
+                    ],
+                }
+            match = re.match(r'^[A-Za-z]+', text)
+            if not match:
+                return {
+                    'is_option': False,
+                    'variety_code': text,
+                    'variety': text,
+                    'option_type': None,
+                    'risk_keys': [],
+                }
+            code = match.group(0).upper()
+            return {
+                'is_option': False,
+                'variety_code': code,
+                'variety': variety_name_by_code.get(code) or code,
+                'option_type': None,
+                'risk_keys': [],
+            }
+
+        def fetch_delta_map(trade_date):
+            cursor.execute(
+                """
+                SELECT ts_code, delta_val
+                FROM opt_risk_stats
+                WHERE trade_date = %s
+                  AND ts_code IS NOT NULL
+                """,
+                [trade_date],
+            )
+            delta_map = {}
+            for ts_code, delta in cursor.fetchall():
+                key = re.sub(r'\.[A-Za-z]+$', '', str(ts_code or '').strip())
+                key = key.replace('-', '').upper()
+                if key:
+                    delta_map[key] = abs(float(delta or 0))
+            return delta_map
+
+        def fetch_positions(trade_date):
+            delta_map = fetch_delta_map(trade_date)
+            cursor.execute(
+                """
+                SELECT
+                    account,
+                    contract,
+                    direction,
+                    side,
+                    SUM(COALESCE(position_qty, 0)) AS position_qty
+                FROM rh_positions
+                WHERE trade_date = %s
+                  AND account IS NOT NULL
+                  AND contract IS NOT NULL
+                GROUP BY account, contract, direction, side
+                """,
+                [trade_date],
+            )
+            positions = {}
+            for account, contract, direction, side, qty in cursor.fetchall():
+                quantity = float(qty or 0)
+                side_text = str(side or '').strip()
+                direction_text = str(direction or '').strip()
+                is_buy = side_text == '买' or direction_text == '0'
+                is_sell = side_text == '卖' or direction_text == '1'
+                if not is_buy and not is_sell:
+                    continue
+
+                contract_info = parse_contract(contract)
+                signed_qty = quantity if is_buy else -quantity
+                if contract_info['is_option']:
+                    delta = next(
+                        (delta_map[key] for key in contract_info['risk_keys'] if key and key in delta_map),
+                        None,
+                    )
+                    if delta is None or delta <= 0:
+                        continue
+                    equivalent_qty = quantity * delta
+                    is_call = contract_info['option_type'] == 'C'
+                    is_put = contract_info['option_type'] == 'P'
+                    if (is_buy and is_call) or (is_sell and is_put):
+                        signed_qty = equivalent_qty
+                    elif (is_sell and is_call) or (is_buy and is_put):
+                        signed_qty = -equivalent_qty
+                    else:
+                        continue
+
+                key = (account, contract_info['variety'])
+                positions[key] = positions.get(key, 0.0) + signed_qty
+            return positions
+
+        latest_positions = fetch_positions(latest_date)
+        previous_positions = fetch_positions(previous_date) if previous_date else {}
+
+        cursor.execute(
+            """
+            SELECT
+                account_id,
+                COALESCE(account_name, account_id) AS account_name,
+                invest_logic
+            FROM mom_account_record
+            WHERE account_id IS NOT NULL
+            """
+        )
+        advisor_by_account = {
+            row[0]: {
+                'pid': row[0],
+                'account_code': row[0],
+                'name': row[1],
+                'invest_logic': row[2],
+                'is_quant': row[2] == '量化',
+            }
+            for row in cursor.fetchall()
+            if row[0]
+        }
+
+    by_variety = {}
+    all_keys = set(latest_positions.keys()) | set(previous_positions.keys())
+    for account, variety in all_keys:
+        current = latest_positions.get((account, variety), 0.0)
+        previous = previous_positions.get((account, variety), 0.0)
+        metrics = by_variety.setdefault(variety, empty_metrics())
+        advisor = advisor_by_account.get(account) or {
+            'pid': account,
+            'account_code': account,
+            'name': str(account),
+            'invest_logic': None,
+            'is_quant': False,
+        }
+
+        if current > 0:
+            add_metric(metrics, 'net_long', advisor)
+        elif current < 0:
+            add_metric(metrics, 'net_short', advisor)
+
+        if previous > 0 and current < 0:
+            add_metric(metrics, 'long_to_short', advisor)
+        elif previous < 0 and current > 0:
+            add_metric(metrics, 'short_to_long', advisor)
+        elif current > 0 and previous >= 0 and current > previous:
+            add_metric(metrics, 'add_long', advisor)
+        elif previous > 0 and current >= 0 and current < previous:
+            add_metric(metrics, 'reduce_long', advisor)
+        elif current < 0 and previous <= 0 and current < previous:
+            add_metric(metrics, 'add_short', advisor)
+        elif previous < 0 and current <= 0 and current > previous:
+            add_metric(metrics, 'reduce_short', advisor)
+
+    for metrics in by_variety.values():
+        for key in metric_keys:
+            advisors = list(metrics[key].pop('advisors_by_name').values())
+            advisors.sort(key=lambda item: (not item.get('is_quant', False), item.get('name') or ''))
+            metrics[key]['advisors'] = advisors
+            metrics[key]['count'] = len(advisors)
+            metrics[key]['quant_count'] = sum(1 for item in advisors if item.get('is_quant'))
+
+    rows = [
+        {
+            'variety': variety,
+            'metrics': metrics,
+        }
+        for variety, metrics in by_variety.items()
+    ]
+    rows.sort(
+        key=lambda row: (
+            -row['metrics']['net_long']['count'],
+            -row['metrics']['net_short']['count'],
+            row['variety'],
+        )
+    )
+
+    return Response({
+        'trade_date': latest_date.isoformat() if latest_date else None,
+        'previous_trade_date': previous_date.isoformat() if previous_date else None,
+        'rows': rows,
+        'columns': metric_keys,
     })
 
 
