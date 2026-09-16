@@ -1,5 +1,5 @@
 <template>
-  <div class="d-anim" style="max-width:1460px;margin:0 auto">
+  <div class="d-anim max-w-6xl mx-auto">
     <!-- 加载中 -->
     <div v-if="loading" class="d-card" style="display:flex;align-items:center;justify-content:center;height:320px">
       <span class="d-muted">加载中…</span>
@@ -108,6 +108,86 @@
           </template>
           <div v-else style="display:flex;align-items:center;justify-content:center;height:480px">
             <span class="d-muted">该投顾暂无净值数据</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ③ 区间收益（月度 / 年度） -->
+      <div class="d-card" style="margin-top:14px">
+        <div class="d-card-h">
+          <span class="d-card-t">区间收益</span>
+          <span class="d-card-x">按月度与年度划分的区间收益率</span>
+        </div>
+        <div class="d-card-b">
+          <template v-if="periodReturnRows.length">
+            <div class="pr-scroll">
+              <table class="d-table pr-table">
+                <thead>
+                  <tr>
+                    <th>年份</th>
+                    <th v-for="m in 12" :key="m">{{ m }}月</th>
+                    <th>全年</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in periodReturnRows" :key="row.year">
+                    <td class="pr-year">{{ row.year }}</td>
+                    <td v-for="m in 12" :key="m" class="d-mono pr-c" :style="cellStyle(row.months[m - 1])">
+                      {{ fmtCell(row.months[m - 1]) }}
+                    </td>
+                    <td class="d-mono pr-year-cell" :style="cellStyle(row.yearReturn)">
+                      {{ fmtCell(row.yearReturn) }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <!-- 图例 -->
+            <div class="pr-legend">
+              <template v-for="bucket in legendBuckets" :key="bucket.label">
+                <span class="pr-leg-item">
+                  <i :style="{ background: bucket.color }"></i>
+                  {{ bucket.label }}
+                </span>
+              </template>
+            </div>
+          </template>
+          <div v-else style="display:flex;align-items:center;justify-content:center;height:160px">
+            <span class="d-muted">该投顾暂无净值数据</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ④ 风险收益指标 -->
+      <div class="d-card" style="margin-top:14px">
+        <div class="d-card-h">
+          <span class="d-card-t">风险收益指标</span>
+          <span class="d-card-x">近1年 / 近2年 / 近3年 / 成立以来</span>
+        </div>
+        <div class="d-card-b">
+          <div class="ri-scroll">
+            <table class="d-table ri-table">
+              <thead>
+                <tr>
+                  <th style="text-align:left">指标</th>
+                  <th>近1年</th>
+                  <th>近2年</th>
+                  <th>近3年</th>
+                  <th>成立以来</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="m in riskMetricDefs" :key="m.key">
+                  <td style="text-align:left">{{ m.label }}</td>
+                  <td
+                    v-for="p in riskPeriods"
+                    :key="p"
+                    class="d-mono"
+                    :class="cellTone(m.key, p)"
+                  >{{ fmtRisk(m.key, p) }}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -283,6 +363,113 @@ const periodReturn = computed(() => {
   return series[series.length - 1].cum_return
 })
 
+// 区间收益：按月度 / 年度划分（基于完整净值序列，与时间段选择无关）
+const periodReturnRows = computed(() => {
+  const series = (detail.value?.nav_series || []).filter((s) => s.nav && s.date)
+  if (series.length < 2) return []
+  const rets = []
+  for (let i = 1; i < series.length; i++) {
+    rets.push({
+      date: series[i].date,
+      ret: series[i].nav / series[i - 1].nav - 1,
+    })
+  }
+  // 起始月的上月末基准
+  const first = series[0]
+  const yearMap = new Map()
+  const push = (year) => {
+    let row = yearMap.get(year)
+    if (!row) {
+      row = { year, months: Array(12).fill(null), yearReturn: 0 }
+      yearMap.set(year, row)
+    }
+    return row
+  }
+  let prevYear = Number(first.date.slice(0, 4))
+  for (const item of rets) {
+    const y = Number(item.date.slice(0, 4))
+    const m = Number(item.date.slice(5, 7))
+    const row = push(y)
+    // 日收益按其所属日期归入当月/当年（跨年首段归新年度，符合 月收益=月末净值环比 口径）
+    row.months[m - 1] = (1 + (row.months[m - 1] ?? 0)) * (1 + item.ret) - 1
+    row.yearReturn = (1 + row.yearReturn) * (1 + item.ret) - 1
+    prevYear = y
+  }
+  const rows = [...yearMap.values()].sort((a, b) => a.year - b.year)
+  for (const row of rows) {
+    row.months = row.months.map((v) => (v == null ? null : Math.round(v * 10000) / 100))
+    row.yearReturn = Math.round(row.yearReturn * 10000) / 100
+  }
+  return rows
+})
+
+// 图例分档（正收益暖色 / 负收益绿色，与站点涨跌配色一致）
+const legendBuckets = [
+  { label: '≥10%', color: '#7A2E26' },
+  { label: '5%~10%', color: '#B03A2E' },
+  { label: '0%~5%', color: '#E2B4AE' },
+  { label: '-5%~0%', color: '#BCD9C9' },
+  { label: '-10%~-5%', color: '#5C9C7B' },
+  { label: '≤-10%', color: '#17714B' },
+]
+
+function bucketOf(v) {
+  if (v == null) return null
+  if (v >= 10) return legendBuckets[0]
+  if (v >= 5) return legendBuckets[1]
+  if (v > 0) return legendBuckets[2]
+  if (v > -5) return legendBuckets[3]
+  if (v > -10) return legendBuckets[4]
+  return legendBuckets[5]
+}
+
+function cellStyle(v) {
+  const b = bucketOf(v)
+  if (!b) return null
+  const dark = v >= 10 || v <= -10
+  return { background: b.color, color: dark ? '#FDFCF8' : null }
+}
+
+function fmtCell(v) {
+  if (v == null) return ''
+  return (v > 0 ? '+' : '') + v.toFixed(2)
+}
+
+// 风险收益指标表
+const riskPeriods = ['1y', '2y', '3y', 'since']
+const riskMetricDefs = [
+  { key: 'annual_yield', label: '年化收益率', kind: 'pct' },
+  { key: 'annual_volatility', label: '年化波动率', kind: 'pct' },
+  { key: 'max_drawdown', label: '最大回撤', kind: 'pct' },
+  { key: 'sharpe_ratio', label: '夏普比率', kind: 'num' },
+  { key: 'kama_ratio', label: '卡玛比率', kind: 'num' },
+  { key: 'info_ratio', label: '信息比率', kind: 'num' },
+  { key: 'alpha', label: 'Alpha', kind: 'num' },
+  { key: 'beta', label: 'Beta', kind: 'num' },
+]
+
+function riskValue(metric, period) {
+  return detail.value?.risk_table?.[metric]?.[period]
+}
+
+function fmtRisk(metric, period) {
+  const v = riskValue(metric, period)
+  if (v == null) return '—'
+  const def = riskMetricDefs.find((m) => m.key === metric)
+  if (def?.kind === 'pct') return (v > 0 ? '+' : '') + (v * 100).toFixed(2) + '%'
+  return Number(v).toFixed(2)
+}
+
+// 收益类与回撤类按正负着色
+function cellTone(metric, period) {
+  const v = riskValue(metric, period)
+  if (v == null) return ''
+  const def = riskMetricDefs.find((m) => m.key === metric)
+  if (!def) return ''
+  if (metric === 'beta') return ''
+  return v >= 0 ? 'd-up' : 'd-dn'
+}
+
 // 以区间起始日为基准重新计算累计收益和回撤
 function recalcSeries(series) {
   if (!series.length) return []
@@ -429,3 +616,97 @@ onUnmounted(() => {
   navChart?.dispose()
 })
 </script>
+
+<style scoped>
+.pr-scroll {
+  overflow-x: auto;
+}
+
+.pr-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+.pr-table th,
+.pr-table td {
+  text-align: center;
+  padding: 8px 4px;
+  font-size: 12px;
+  border: 1px solid var(--line);
+}
+
+.pr-table th:first-child,
+.pr-table td:first-child {
+  width: 64px;
+}
+
+.pr-table th:last-child,
+.pr-table td:last-child {
+  width: 90px;
+}
+
+.pr-year {
+  font-weight: 600;
+  background: var(--soft);
+}
+
+.pr-c {
+  text-align: center;
+}
+
+.pr-year-cell {
+  font-weight: 600;
+}
+
+.pr-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.pr-leg-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.pr-leg-item i {
+  width: 22px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.ri-scroll {
+  overflow-x: auto;
+}
+
+.ri-table {
+  width: 100%;
+}
+
+.ri-table th,
+.ri-table td {
+  padding: 9px 12px;
+}
+
+.ri-table th:not(:first-child),
+.ri-table td:not(:first-child) {
+  text-align: right;
+}
+
+.ri-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--soft);
+}
+
+.ri-table tbody tr:nth-child(odd) {
+  background: color-mix(in srgb, var(--soft) 40%, transparent);
+}
+</style>

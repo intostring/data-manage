@@ -1,10 +1,5 @@
 <template>
   <div class="max-w-6xl mx-auto">
-    <div class="mb-5">
-      <h2 class="text-lg font-semibold text-ink">盈亏分析</h2>
-      <p class="text-sm text-ink-muted mt-1">品种表现、板块分布与投顾配置观察</p>
-    </div>
-
     <section class="d-card">
       <div class="d-card-h">
         <div>

@@ -26,55 +26,130 @@
       <div class="d-card-b ato-card-b">
         <div v-if="loading" class="ato-empty">加载中...</div>
         <div v-else-if="error" class="ato-empty">{{ error }}</div>
-        <div v-else class="ato-scroll">
-          <table class="ato-table">
-            <thead>
-              <tr>
-                <th class="ato-fix ato-fix-1" rowspan="4">投顾</th>
-                <th class="ato-fix ato-fix-2" rowspan="4">起始时间</th>
-                <th class="ato-fix ato-fix-3" rowspan="4">板块数</th>
-                <th class="ato-fix ato-fix-4" rowspan="4">品种数</th>
-                <th
-                  v-for="g in headerL1"
-                  :key="`l1-${g.name}`"
-                  :colspan="g.colSpan"
-                  class="ato-l1"
-                >{{ g.name }}</th>
-              </tr>
-              <tr>
-                <th
-                  v-for="g in headerL2"
-                  :key="`l2-${g.name}`"
-                  :colspan="g.colSpan"
-                  class="ato-l2"
-                >{{ g.name }}</th>
-              </tr>
-              <tr>
-                <th v-for="col in columns" :key="`c-${col.key}`" class="ato-code">{{ col.code }}</th>
-              </tr>
-              <tr>
-                <th v-for="col in columns" :key="`n-${col.key}`" :class="['ato-name', col.agg ? 'ato-agg' : '']">{{ col.name }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in rows" :key="row.account_id">
-                <td class="ato-fix ato-fix-1 ato-advisor">{{ row.advisor_name }}</td>
-                <td class="ato-fix ato-fix-2 ato-mono">{{ row.start_time }}</td>
-                <td class="ato-fix ato-fix-3 ato-mono">{{ row.sector_count }}</td>
-                <td class="ato-fix ato-fix-4 ato-mono">{{ row.variety_count }}</td>
-                <td
-                  v-for="col in columns"
-                  :key="`${row.account_id}-${col.key}`"
-                  :class="['ato-cell', col.agg ? 'ato-agg' : '']"
-                  :style="cellStyle(row.values[col.key], col)"
-                  :title="cellTitle(row, col)"
-                >
-                  {{ fmtCell(row.values[col.key]) }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <template v-else>
+          <!-- Excel 式筛选栏 -->
+          <div class="ato-filter">
+            <input v-model.trim="searchText" class="ato-ipt" placeholder="筛选投顾名称…" />
+            <div class="ato-fitem">
+              <span class="ato-flab">品种数 ≥</span>
+              <input v-model.number="minVariety" type="number" min="0" class="ato-ipt ato-ipt-n" />
+            </div>
+            <select v-model="sectorFilter" class="ato-ipt">
+              <option value="">全部板块</option>
+              <option v-for="s in sectorOptions" :key="s" :value="s">{{ s }}</option>
+            </select>
+            <label class="ato-chk"><input type="checkbox" v-model="hideEmpty" />仅显示有交易的品种列</label>
+            <button v-if="isFiltered" class="ato-clear" @click="resetFilter">重置</button>
+            <span class="ato-fcount">{{ displayRows.length }} 位投顾 · {{ displayColumns.length }} 列</span>
+          </div>
+
+          <!-- 左右双表：左侧固定列整体 sticky，杜绝列间缝隙 -->
+          <div class="ato-scroll">
+            <div class="ato-grid">
+              <div class="ato-left">
+                <table class="ato-tbl">
+                  <colgroup>
+                    <col style="width: 96px" />
+                    <col style="width: 94px" />
+                    <col style="width: 54px" />
+                    <col style="width: 54px" />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th class="ato-sort" @click="sortBy('advisor')">
+                        投顾<i class="ato-arrow" :class="sortClass('advisor')">{{ sortArrow('advisor') }}</i>
+                      </th>
+                      <th class="ato-sort" @click="sortBy('start')">
+                        起始时间<i class="ato-arrow" :class="sortClass('start')">{{ sortArrow('start') }}</i>
+                      </th>
+                      <th class="ato-sort" @click="sortBy('sector')">
+                        板块数<i class="ato-arrow" :class="sortClass('sector')">{{ sortArrow('sector') }}</i>
+                      </th>
+                      <th class="ato-sort" @click="sortBy('variety')">
+                        品种数<i class="ato-arrow" :class="sortClass('variety')">{{ sortArrow('variety') }}</i>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="(row, i) in displayRows"
+                      :key="row.account_id"
+                      :class="{ 'ato-hover': hoverRow === i }"
+                      @mouseenter="hoverRow = i"
+                      @mouseleave="hoverRow = -1"
+                    >
+                      <td class="ato-advisor" :title="row.advisor_name">{{ row.advisor_name }}</td>
+                      <td class="ato-mono">{{ row.start_time }}</td>
+                      <td class="ato-mono">{{ row.sector_count }}</td>
+                      <td class="ato-mono">{{ row.variety_count }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <table class="ato-tbl ato-main">
+                <colgroup>
+                  <col v-for="col in displayColumns" :key="`col-${col.key}`" style="width: 62px" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th
+                      v-for="g in headerL1"
+                      :key="`l1-${g.name}`"
+                      :colspan="g.colSpan"
+                      class="ato-l1"
+                    >{{ g.name }}</th>
+                  </tr>
+                  <tr>
+                    <th
+                      v-for="g in headerL2"
+                      :key="`l2-${g.name}`"
+                      :colspan="g.colSpan"
+                      class="ato-l2"
+                    >{{ g.name }}</th>
+                  </tr>
+                  <tr>
+                    <th
+                      v-for="col in displayColumns"
+                      :key="`c-${col.key}`"
+                      class="ato-code ato-sort"
+                      :title="col.code"
+                      @click="sortBy(col.key)"
+                    >{{ col.code }}<i class="ato-arrow" :class="sortClass(col.key)">{{ sortArrow(col.key) }}</i></th>
+                  </tr>
+                  <tr>
+                    <th
+                      v-for="col in displayColumns"
+                      :key="`n-${col.key}`"
+                      :class="['ato-name', 'ato-sort', col.agg ? 'ato-agg' : '']"
+                      :title="col.name"
+                      @click="sortBy(col.key)"
+                    >{{ col.agg ? '小计' : col.name }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="(row, i) in displayRows"
+                    :key="row.account_id"
+                    :class="{ 'ato-hover': hoverRow === i }"
+                    @mouseenter="hoverRow = i"
+                    @mouseleave="hoverRow = -1"
+                  >
+                    <td
+                      v-for="col in displayColumns"
+                      :key="`${row.account_id}-${col.key}`"
+                      :class="['ato-cell', col.agg ? 'ato-agg' : '']"
+                      :style="cellStyle(row.values[col.key], col)"
+                      :title="cellTitle(row, col)"
+                    >
+                      {{ fmtCell(row.values[col.key]) }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </template>
       </div>
     </section>
   </div>
@@ -103,13 +178,109 @@ const rows = computed(() => data.value.rows || [])
 const advisorCount = computed(() => data.value.advisor_count ?? rows.value.length)
 const varietyCount = computed(() => data.value.variety_count ?? 0)
 
+// ---- Excel 式筛选 / 排序 ----
+const searchText = ref('')
+const minVariety = ref(0)
+const sectorFilter = ref('')
+const hideEmpty = ref(false)
+const sortKey = ref('variety')
+const sortDir = ref('desc')
+const hoverRow = ref(-1)
+
+const sectorOptions = computed(() =>
+  [...new Set(columns.value.map((c) => c.l1).filter(Boolean))]
+)
+
+// 行筛选：投顾名称 + 最小品种数
+const filteredRows = computed(() => {
+  let list = rows.value
+  if (searchText.value) {
+    const q = searchText.value.toLowerCase()
+    list = list.filter((r) => (r.advisor_name || '').toLowerCase().includes(q))
+  }
+  if (minVariety.value > 0) {
+    list = list.filter((r) => (r.variety_count || 0) >= minVariety.value)
+  }
+  return list
+})
+
+// 列筛选：板块 + 隐藏无交易品种列（含对应合计列）
+const displayColumns = computed(() => {
+  let cols = columns.value
+  if (sectorFilter.value) {
+    cols = cols.filter((c) => c.l1 === sectorFilter.value)
+  }
+  if (hideEmpty.value) {
+    const active = new Set()
+    for (const r of filteredRows.value) {
+      for (const c of cols) {
+        if (!c.agg && Number(r.values[c.key] || 0) > 0) active.add(c.key)
+      }
+    }
+    const activeCodes = new Set(
+      cols.filter((c) => !c.agg && active.has(c.key)).map((c) => c.code)
+    )
+    cols = cols.filter((c) =>
+      !c.agg ? active.has(c.key) : (c.members || []).some((m) => activeCodes.has(m))
+    )
+  }
+  return cols
+})
+
+// 排序：固定 4 列或任意品种列（含合计列）
+const displayRows = computed(() => {
+  const key = sortKey.value
+  const dir = sortDir.value === 'desc' ? -1 : 1
+  const list = [...filteredRows.value]
+  if (key === 'advisor') {
+    list.sort((a, b) => dir * (a.advisor_name || '').localeCompare(b.advisor_name || '', 'zh'))
+  } else if (key === 'start') {
+    list.sort((a, b) => dir * (a.start_time || '').localeCompare(b.start_time || ''))
+  } else if (key === 'sector' || key === 'variety') {
+    const field = `${key}_count`
+    list.sort((a, b) => dir * ((a[field] || 0) - (b[field] || 0)))
+  } else {
+    list.sort((a, b) => dir * (Number(a.values[key] || 0) - Number(b.values[key] || 0)))
+  }
+  return list
+})
+
+const isFiltered = computed(() =>
+  !!searchText.value || minVariety.value > 0 || !!sectorFilter.value || hideEmpty.value
+)
+
+function resetFilter() {
+  searchText.value = ''
+  minVariety.value = 0
+  sectorFilter.value = ''
+  hideEmpty.value = false
+}
+
+function sortBy(key) {
+  if (sortKey.value === key) {
+    sortDir.value = sortDir.value === 'desc' ? 'asc' : 'desc'
+  } else {
+    sortKey.value = key
+    sortDir.value = key === 'advisor' || key === 'start' ? 'asc' : 'desc'
+  }
+}
+
+function sortArrow(key) {
+  if (sortKey.value !== key) return '↕'
+  return sortDir.value === 'desc' ? '↓' : '↑'
+}
+
+function sortClass(key) {
+  return sortKey.value === key ? 'on' : ''
+}
+
 const isShare = computed(() => mode.value === 'turnover_share' || mode.value === 'margin_share')
 
 // 4 行表头：大类分组
 const headerL1 = computed(() => {
   const groups = []
   let current = null
-  for (const col of columns.value) {
+  for (const col of displayColumns.value) {
     if (!current || current.name !== col.l1) {
       current = { name: col.l1, colSpan: 1 }
       groups.push(current)
@@ -124,8 +295,8 @@ const headerL1 = computed(() => {
 const headerL2 = computed(() => {
   const groups = []
   let current = null
-  for (const col of columns.value) {
-    const name = col.l2 || col.name
+  for (const col of displayColumns.value) {
+    const name = col.l2 || (col.agg ? '小计' : col.name)
     if (!current || current.name !== name) {
       current = { name, colSpan: 1 }
       groups.push(current)
@@ -249,6 +420,104 @@ onMounted(fetchData)
   padding: 0;
 }
 
+/* Excel 式筛选栏 */
+.ato-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: #FBF9F3;
+  border-radius: 6px 6px 0 0;
+}
+
+.ato-ipt {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--card);
+  font-size: 12px;
+  color: var(--ink);
+  outline: none;
+}
+
+.ato-ipt:focus {
+  border-color: var(--navy);
+}
+
+.ato-ipt-n {
+  width: 64px;
+}
+
+.ato-fitem {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ato-flab {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.ato-chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ato-clear {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--card);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ato-clear:hover {
+  color: var(--ink);
+  border-color: var(--navy);
+}
+
+.ato-fcount {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* 可排序表头 */
+th.ato-sort {
+  cursor: pointer;
+  user-select: none;
+}
+
+th.ato-sort:hover {
+  filter: brightness(0.95);
+}
+
+.ato-arrow {
+  font-style: normal;
+  font-size: 10px;
+  margin-left: 3px;
+  opacity: 0.3;
+}
+
+.ato-arrow.on {
+  opacity: 1;
+  color: var(--navy);
+}
+
 .ato-empty {
   min-height: 200px;
   display: flex;
@@ -257,100 +526,133 @@ onMounted(fetchData)
   color: var(--muted);
 }
 
+/* ---------- 双表布局：左固定块 + 右滚动矩阵 ---------- */
 .ato-scroll {
   max-height: calc(100vh - 220px);
   overflow: auto;
   border-radius: 0 0 6px 6px;
 }
 
-.ato-table {
-  border-collapse: separate;
-  border-spacing: 0;
-  font-size: 12px;
-  table-layout: fixed;
+.ato-grid {
+  display: flex;
+  align-items: flex-start;
+  width: max-content;
   min-width: 100%;
 }
 
-.ato-table th,
-.ato-table td {
+/* 左侧固定列：整个块 sticky，块内普通表格，列间不存在吸附缝隙 */
+.ato-left {
+  position: sticky;
+  left: 0;
+  z-index: 6;
+  flex: none;
+  background: var(--card);
+  box-shadow: 1px 0 0 var(--line2);
+}
+
+.ato-tbl {
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.ato-tbl th,
+.ato-tbl td {
   border-right: 1px solid var(--line2);
   border-bottom: 1px solid var(--line2);
   text-align: center;
   white-space: nowrap;
-  padding: 5px 8px;
-  min-width: 46px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 4px;
 }
 
-.ato-table thead th {
+/* 行高严格一致，保证左右两表逐行对齐 */
+.ato-tbl tbody tr {
+  height: 30px;
+}
+
+/* 左表表头：单行撑满 4 层表头的高度 */
+.ato-left thead tr {
+  height: 104px;
+}
+
+.ato-left thead th {
   position: sticky;
   top: 0;
-  z-index: 3;
+  z-index: 7;
   background: var(--soft);
   color: var(--ink);
   font-weight: 600;
-}
-
-.ato-table thead tr:nth-child(1) th.ato-l1 {
-  top: 0;
-  z-index: 3;
-  background: #5B9BD5;
-  color: #fff;
-}
-
-.ato-table thead tr:nth-child(2) th.ato-l2 {
-  top: 27px;
-  z-index: 2;
-  background: #D6E4F0;
-  color: #2C4A6E;
-}
-
-.ato-table thead tr:nth-child(3) th.ato-code {
-  top: 54px;
-  z-index: 1;
-  background: #EDF2F8;
-  font-family: var(--mono);
-  font-size: 11px;
-}
-
-.ato-table thead tr:nth-child(4) th.ato-name {
-  top: 81px;
-  z-index: 1;
-  background: var(--soft);
-  font-weight: 500;
-}
-
-.ato-table thead th.ato-agg {
-  background: #F5EFD8;
-}
-
-/* 固定前 4 列 */
-.ato-fix {
-  position: sticky;
-  z-index: 4;
-  background: var(--card);
   text-align: left;
+  padding-left: 8px;
+  vertical-align: middle;
 }
 
-.ato-fix-1 { left: 0; min-width: 76px; }
-.ato-fix-2 { left: 76px; min-width: 88px; }
-.ato-fix-3 { left: 164px; min-width: 52px; }
-.ato-fix-4 { left: 216px; min-width: 52px; }
-
-.ato-table thead .ato-fix {
-  z-index: 6;
-  background: var(--soft);
+.ato-left td {
+  background: var(--card);
 }
 
 .ato-advisor {
   font-weight: 600;
   text-align: left;
+  padding-left: 8px;
 }
 
 .ato-mono {
   font-family: var(--mono);
+  font-size: 11px;
 }
 
+/* 右侧矩阵表头：4 层，每层 26px */
+.ato-main thead tr {
+  height: 26px;
+}
+
+.ato-main thead th {
+  position: sticky;
+  z-index: 3;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.ato-main thead tr:nth-child(1) th.ato-l1 {
+  top: 0;
+  background: #5B9BD5;
+  color: #fff;
+  font-size: 12px;
+}
+
+.ato-main thead tr:nth-child(2) th.ato-l2 {
+  top: 26px;
+  background: #D6E4F0;
+  color: #2C4A6E;
+  font-size: 12px;
+}
+
+.ato-main thead tr:nth-child(3) th.ato-code {
+  top: 52px;
+  background: #EDF2F8;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.ato-main thead tr:nth-child(4) th.ato-name {
+  top: 78px;
+  background: var(--soft);
+  font-weight: 500;
+  font-size: 11px;
+}
+
+.ato-main thead th.ato-agg {
+  background: #F5EFD8;
+}
+
+/* 数据单元格：等宽小字号，62px 列宽可完整显示 */
 .ato-cell {
+  font-family: var(--mono);
+  font-size: 11px;
   color: var(--ink);
 }
 
@@ -358,11 +660,8 @@ onMounted(fetchData)
   font-weight: 600;
 }
 
-.ato-table tbody tr:hover td {
+/* 左右两表联动悬停 */
+.ato-tbl tbody tr.ato-hover td {
   background-color: #F8F4E9;
-}
-
-.ato-table tbody tr:hover td.ato-fix {
-  background: #F8F4E9;
 }
 </style>

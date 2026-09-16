@@ -452,6 +452,12 @@ def advisor_performance(request):
 
     # 风险收益指标：投顾业绩顶部基本数据取成立以来口径
     indicators = {}
+    risk_periods = ['1y', '2y', '3y', 'since']
+    risk_metrics = [
+        'annual_yield', 'annual_volatility', 'max_drawdown',
+        'sharpe_ratio', 'kama_ratio', 'info_ratio', 'alpha', 'beta',
+    ]
+    risk_table = None
     if risk:
         indicators = {
             'total_return': header.since_inception_rise if header else None,
@@ -463,6 +469,10 @@ def advisor_performance(request):
             'info_ratio': risk.info_ratio_since,
             'alpha': risk.alpha_since,
             'beta': risk.beta_since,
+        }
+        risk_table = {
+            metric: {p: getattr(risk, f'{metric}_{p}') for p in risk_periods}
+            for metric in risk_metrics
         }
 
     # 净值序列：从 perf_net_values 查询，按日期升序
@@ -495,6 +505,7 @@ def advisor_performance(request):
     return Response({
         'info': info,
         'indicators': indicators,
+        'risk_table': risk_table,
         'nav_series': nav_series,
     })
 
@@ -1266,8 +1277,25 @@ def advisor_trade_overview(request):
         else:
             start = end = None
 
-        # 成交额聚合（account, contract，不带 trade_date 维度以加速）
-        if start is not None:
+        # 成交额（account × variety）
+        # 1m/3m/1y/std 直接读预聚合表 yl_perf_trade_variety_stat（毫秒级）；
+        # 仅 day 窗口回退到 rh_trades 原始聚合
+        trade_rows = []
+        if window != 'day':
+            cursor.execute(
+                f"""
+                SELECT account, variety_code, SUM(COALESCE(trade_amount, 0))
+                FROM yl_perf_trade_variety_stat
+                WHERE account IN ({ph}) AND calc_window = %s
+                  AND trade_date = (
+                      SELECT MAX(trade_date) FROM yl_perf_trade_variety_stat WHERE calc_window = %s
+                  )
+                GROUP BY account, variety_code
+                """,
+                [*account_ids, window, window],
+            )
+            trade_rows = cursor.fetchall()
+        else:
             cursor.execute(
                 f"""
                 SELECT account, contract, SUM(COALESCE(trade_amount, 0))
@@ -1277,26 +1305,18 @@ def advisor_trade_overview(request):
                 """,
                 [*account_ids, start, end],
             )
-        else:
-            # 成立以来：全历史聚合（不再按 create_time 过滤——部分账户 create_time 字段不准确会误删历史成交）
-            cursor.execute(
-                f"""
-                SELECT account, contract, SUM(COALESCE(trade_amount, 0))
-                FROM rh_trades
-                WHERE account IN ({ph})
-                GROUP BY account, contract
-                """,
-                account_ids,
-            )
-        trade_rows = cursor.fetchall()
+            trade_rows = cursor.fetchall()
 
         # 保证金率原始数据（各合约最新交易日 margin/market_value），后按品种聚合
+        cursor.execute('SELECT MAX(trade_date) FROM rh_positions')
+        pos_latest = cursor.fetchone()[0]
         cursor.execute(
             """
             SELECT contract, margin, market_value
             FROM rh_positions
-            WHERE trade_date = (SELECT MAX(trade_date) FROM rh_positions)
-            """
+            WHERE trade_date = %s
+            """,
+            [pos_latest],
         )
         margin_rows = cursor.fetchall()
 
@@ -1321,11 +1341,49 @@ def advisor_trade_overview(request):
         mv_sum[vc] = mv_sum.get(vc, 0.0) + mv_f
     margin_rate = {vc: margin_sum[vc] / mv_sum[vc] for vc in margin_sum if mv_sum.get(vc, 0) > 0}
 
+    # 回退：最新日保证金缺失的品种（如数据源当日 margin=0），取该品种近30天内最近一个有值日期的率
+    missing = [c for c in variety_meta if c not in margin_rate]
+    if missing and pos_latest:
+        missing_set = set(missing)
+        likes = ' OR '.join(['(contract LIKE %s OR contract LIKE %s)'] * len(missing))
+        like_params = []
+        for c in missing:
+            like_params.extend([c + '%', c.lower() + '%'])
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT trade_date, contract, margin, market_value
+                FROM rh_positions
+                WHERE trade_date >= %s - INTERVAL 30 DAY
+                  AND margin > 0 AND market_value > 0
+                  AND ({likes})
+                """,
+                [pos_latest, *like_params],
+            )
+            by_date = {}
+            for d, contract, mg, mv in cursor.fetchall():
+                vc = extract_variety(contract)
+                if vc is None or vc not in missing_set:
+                    continue
+                acc = by_date.setdefault((vc, d), [0.0, 0.0])
+                acc[0] += float(mg or 0)
+                acc[1] += float(mv or 0)
+        best = {}
+        for (vc, d), (mg, mv) in by_date.items():
+            if mv > 0 and (vc not in best or d > best[vc][0]):
+                best[vc] = (d, mg / mv)
+        for vc, (_d, rate) in best.items():
+            margin_rate[vc] = rate
+
     # 聚合：投顾 × 品种 的成交额与保证金
     turnover = {}
     margin = {}
-    for account, contract, amount in trade_rows:
-        variety_code = extract_variety(contract)
+    for row in trade_rows:
+        account, second_col, amount = row
+        if window != 'day':
+            variety_code = str(second_col or '').upper() or None
+        else:
+            variety_code = extract_variety(second_col)
         if variety_code is None:
             continue
         key = (account, variety_code)

@@ -1,10 +1,5 @@
 <template>
   <div class="max-w-6xl mx-auto">
-    <div class="mb-5">
-      <h2 class="text-lg font-semibold text-ink">板块分析</h2>
-      <p class="text-sm text-ink-muted mt-1">板块表现、轮动与投顾板块配置观察</p>
-    </div>
-
     <section class="d-card">
       <div class="d-card-h">
         <div>
