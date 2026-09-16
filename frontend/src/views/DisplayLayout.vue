@@ -192,7 +192,7 @@ const modules = [
     icon: ArrowLeftRight,
     children: [
       { name: 'display-trade-advisor-overview', label: '投顾交易概况', path: '/display/trade/advisor-overview' },
-      { name: 'display-sector-contract-kline', label: '合约K线', path: '/display/sector/contract-kline' },
+      { name: 'display-sector-contract-kline', label: '合约成交明细', path: '/display/sector/contract-kline' },
     ],
   },
   { name: 'display-risk', label: '风险控制', path: '/display/risk', icon: ShieldCheck },
@@ -205,7 +205,7 @@ const titleMap = {
   'display-sector': '盈亏分析',
   'display-sector-pnl': '品种盈亏',
   'display-sector-advisor-variety': '品种投顾明细',
-  'display-sector-contract-kline': '合约K线',
+  'display-sector-contract-kline': '合约成交明细',
   'display-position': '持仓分析',
   'display-position-sector-analysis': '板块分析',
   'display-position-sector-detail': '板块持仓明细',
