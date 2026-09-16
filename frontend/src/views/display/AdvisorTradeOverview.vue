@@ -124,7 +124,7 @@
                       :class="['ato-name', 'ato-sort', col.agg ? 'ato-agg' : '']"
                       :title="col.name"
                       @click="sortBy(col.key)"
-                    >{{ col.agg ? '小计' : col.name }}</th>
+                    >{{ col.agg ? aggText(col) : col.name }}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -274,6 +274,13 @@ function sortClass(key) {
   return sortKey.value === key ? 'on' : ''
 }
 
+// 合计列文字：区分大类/子类小计
+function aggText(col) {
+  if (col.agg === 'l1') return '大类小计'
+  if (col.agg === 'l2') return '子类小计'
+  return col.name
+}
+
 const isShare = computed(() => mode.value === 'turnover_share' || mode.value === 'margin_share')
 
 // 4 行表头：大类分组
@@ -296,7 +303,7 @@ const headerL2 = computed(() => {
   const groups = []
   let current = null
   for (const col of displayColumns.value) {
-    const name = col.l2 || (col.agg ? '小计' : col.name)
+    const name = col.l2 || aggText(col)
     if (!current || current.name !== name) {
       current = { name, colSpan: 1 }
       groups.push(current)
