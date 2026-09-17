@@ -203,7 +203,7 @@ onMounted(fetchRanking)
 .pnr-table th:nth-child(3),
 .pnr-table td:nth-child(3) {
   width: 140px;
-  text-align: right;
+  text-align: left;
 }
 
 .pnr-rank-col {

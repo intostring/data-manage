@@ -417,8 +417,8 @@ function pieOption(rows, total, metricLabel = '保证金', formatValue = fmtMone
       {
         name: `${metricLabel}占比`,
         type: 'pie',
-        radius: dense ? '50%' : '56%',
-        center: ['32%', '52%'],
+        radius: dense ? '52%' : '58%',
+        center: ['33%', '55%'],
         avoidLabelOverlap: true,
         minAngle: 0.5,
         label: {
@@ -430,12 +430,17 @@ function pieOption(rows, total, metricLabel = '保证金', formatValue = fmtMone
         },
         labelLine: {
           show: true,
-          length: dense ? 7 : 10,
-          length2: dense ? 5 : 8,
+          length: dense ? 9 : 10,
+          length2: dense ? 7 : 8,
           lineStyle: { color: '#8F8A79' },
         },
         emphasis: { scaleSize: 3 },
-        data: rows.map((row) => ({ name: row.name, value: row.value })),
+        // 占比过小的扇区不画标签（避免互相重叠被整体隐藏），信息由图例/tooltip 承担
+        data: rows.map((row) => {
+          const share = total ? row.value / total : 0
+          const show = share >= 0.02
+          return { name: row.name, value: row.value, label: { show }, labelLine: { show } }
+        }),
       },
     ],
   }
@@ -449,6 +454,10 @@ function renderPie(container, holder, rows, total, metricLabel = '保证金', fo
   }
   if (!holder.current) holder.current = echarts.init(container)
   holder.current.setOption(pieOption(rows, total, metricLabel, formatValue))
+  // 容器布局稳定后校准尺寸，避免初始化时宽高为 0 导致画布空白
+  requestAnimationFrame(() => {
+    if (holder.current) holder.current.resize()
+  })
 }
 
 watch(marginRows, async () => {
@@ -780,7 +789,7 @@ onUnmounted(() => {
 
 .sb2-pie-echart {
   width: 100%;
-  height: 380px;
+  height: 420px;
 }
 
 /* 品种饼图项目更多，保留足够高度给图例滚动区 */

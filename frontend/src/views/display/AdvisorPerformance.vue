@@ -12,8 +12,8 @@
 
     <!-- 详情内容 -->
     <template v-else>
-      <!-- ① 档案与核心指标 -->
-      <div class="d-card" style="margin-bottom:14px">
+      <!-- ① 档案与核心指标（吸顶固定） -->
+      <div class="d-card ap-sticky" style="margin-bottom:14px">
         <div class="d-card-b">
           <div>
             <div style="display:flex;align-items:center;gap:10px">
@@ -618,6 +618,14 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* 档案与核心指标卡片吸顶：滚动查看下方图表/表格时保持可见 */
+.ap-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
 .pr-scroll {
   overflow-x: auto;
 }
