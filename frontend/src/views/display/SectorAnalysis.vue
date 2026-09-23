@@ -417,30 +417,15 @@ function pieOption(rows, total, metricLabel = '保证金', formatValue = fmtMone
       {
         name: `${metricLabel}占比`,
         type: 'pie',
-        radius: dense ? '52%' : '58%',
+        radius: dense ? '58%' : '64%',
         center: ['33%', '55%'],
         avoidLabelOverlap: true,
         minAngle: 0.5,
-        label: {
-          show: true,
-          formatter: '{b}\n{d}%',
-          fontSize: dense ? 9 : 10,
-          lineHeight: dense ? 11 : 13,
-          color: '#20283A',
-        },
-        labelLine: {
-          show: true,
-          length: dense ? 9 : 10,
-          length2: dense ? 7 : 8,
-          lineStyle: { color: '#8F8A79' },
-        },
+        // 扇区上不画标签，名称与占比由右侧图例及悬停提示展示
+        label: { show: false },
+        labelLine: { show: false },
         emphasis: { scaleSize: 3 },
-        // 占比过小的扇区不画标签（避免互相重叠被整体隐藏），信息由图例/tooltip 承担
-        data: rows.map((row) => {
-          const share = total ? row.value / total : 0
-          const show = share >= 0.02
-          return { name: row.name, value: row.value, label: { show }, labelLine: { show } }
-        }),
+        data: rows.map((row) => ({ name: row.name, value: row.value })),
       },
     ],
   }

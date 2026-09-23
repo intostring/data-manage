@@ -145,12 +145,19 @@ import {
   LineChart,
 } from 'lucide-vue-next'
 import { useAdvisorStore } from '../stores/advisor'
+import { useAuthStore } from '../stores/auth'
 import client from '../api/client'
 import '../styles/display.css'
 
 const route = useRoute()
 const router = useRouter()
 const advisorStore = useAdvisorStore()
+const auth = useAuthStore()
+
+async function onLogout() {
+  await auth.logout()
+  router.push('/login')
+}
 const isAdmin = computed(() => route.path.startsWith('/admin'))
 const advisorComboRef = ref(null)
 const varietyComboRef = ref(null)

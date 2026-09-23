@@ -10,10 +10,11 @@ const routes = [
   },
   // 默认进入前台分析
   { path: '/', redirect: '/display/overview' },
-  // 前台分析
+  // 前台分析（公开访问，无需登录）
   {
     path: '/display',
     component: () => import('./views/DisplayLayout.vue'),
+    meta: { public: true },
     children: [
       { path: 'overview', name: 'display-overview', component: () => import('./views/display/Overview.vue') },
       { path: 'advisor', name: 'display-advisor', component: () => import('./views/display/AdvisorPerformance.vue') },

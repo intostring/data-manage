@@ -103,6 +103,16 @@
 .d-seg a { border: 0; background: none; padding: 5px 14px; font-size: 12px; color: var(--muted); cursor: pointer; font-family: var(--sans); text-decoration: none; display: inline-block; }
 .d-seg a.on { background: var(--navy); color: #F2EDE0; }
 
+/* ---------- 顶栏登录状态 ---------- */
+.d-auth { display: flex; align-items: center; gap: 8px; margin-left: 10px; }
+.d-auth-user { font-size: 12px; color: var(--ink); font-weight: 600; }
+.d-auth-btn {
+  border: 1px solid var(--line); background: #FBF9F3; border-radius: 4px;
+  padding: 4px 12px; font-size: 12px; color: var(--muted); cursor: pointer;
+  font-family: var(--sans); text-decoration: none; display: inline-block;
+}
+.d-auth-btn:hover { color: var(--navy); border-color: var(--navy); }
+
 /* ---------- 图例 ---------- */
 .d-chart-leg { display: flex; gap: 16px; align-items: center; font-size: 11.5px; color: var(--muted); }
 .d-leg-i { display: flex; gap: 6px; align-items: center; }

@@ -18,8 +18,11 @@ client.interceptors.response.use(
   (error) => {
     if (error.response && error.response.status === 401) {
       localStorage.removeItem('token')
-      if (!window.location.pathname.startsWith('/login')) {
-        window.location.href = '/login'
+      localStorage.removeItem('user')
+      // 前台分析页公开访问，401 不强制跳转；仅后台管理需要登录
+      const path = window.location.pathname
+      if (path.startsWith('/admin')) {
+        window.location.href = '/login?redirect=' + encodeURIComponent(path)
       }
     }
     return Promise.reject(error)
