@@ -43,6 +43,7 @@ urlpatterns = [
     path('variety/top-net-risk/', views.variety_top_net_risk, name='variety-top-net-risk'),
     path('sector/pnl/', views.sector_pnl, name='sector-pnl'),
     path('sector/pnl-ranking/', views.sector_pnl_ranking, name='sector-pnl-ranking'),
+    path('option/pnl/', views.option_pnl, name='option-pnl'),
     path('sector/contract-kline/', views.sector_contract_kline, name='sector-contract-kline'),
     path('sector/advisor-variety/', views.sector_advisor_variety, name='sector-advisor-variety'),
     path('', include(router.urls)),

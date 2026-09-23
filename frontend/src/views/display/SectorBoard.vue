@@ -66,6 +66,93 @@
         </template>
       </div>
     </section>
+
+    <!-- 期权盈亏 -->
+    <section class="d-card" style="margin-top:16px">
+      <div class="d-card-h">
+        <div>
+          <span class="d-card-t">期权盈亏</span>
+          <span class="d-card-x" style="margin-left:10px">截至 {{ optionData.trade_date || '—' }} · 以来累计 · 全体投顾合计</span>
+        </div>
+        <span class="d-card-x">权利金净收支口径</span>
+      </div>
+      <div class="d-card-b">
+        <div v-if="optLoading" class="pnr-empty">加载中...</div>
+        <div v-else-if="optError" class="pnr-empty">{{ optError }}</div>
+        <template v-else>
+          <div class="opt-kpis">
+            <div>
+              <div class="k">权利金净收支</div>
+              <div class="v d-mono" :class="optTotal.premium >= 0 ? 'd-up' : 'd-dn'">
+                {{ fmtSignedMoney(optTotal.premium) }}
+              </div>
+            </div>
+            <div>
+              <div class="k">手续费合计</div>
+              <div class="v d-mono">{{ fmtMoney(optTotal.fee) }}</div>
+            </div>
+            <div>
+              <div class="k">参与投顾</div>
+              <div class="v d-mono">{{ optTotal.advisors }}</div>
+            </div>
+            <div>
+              <div class="k">期权标的</div>
+              <div class="v d-mono">{{ optTotal.underlying_count }}</div>
+            </div>
+            <div>
+              <div class="k">合约数</div>
+              <div class="v d-mono">{{ optTotal.contracts }}</div>
+            </div>
+            <div>
+              <div class="k">成交笔数</div>
+              <div class="v d-mono">{{ optTotal.trades.toLocaleString() }}</div>
+            </div>
+          </div>
+
+          <div class="pnr-scroll">
+            <table class="d-table pnr-table opt-table">
+              <thead>
+                <tr>
+                  <th class="pnr-rank-col">排名</th>
+                  <th>标的品种</th>
+                  <th>合约数</th>
+                  <th>成交笔数</th>
+                  <th>权利金净收支</th>
+                  <th>手续费</th>
+                  <th class="pnr-bar-col">占比图示</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in optionRows" :key="row.underlying">
+                  <td class="pnr-rank-col">
+                    <span class="pnr-rank">{{ row.rank }}</span>
+                  </td>
+                  <td>
+                    <span class="pnr-name">{{ row.name }}</span>
+                    <span class="pnr-code">{{ row.underlying }}</span>
+                  </td>
+                  <td class="d-mono">{{ row.contracts }}</td>
+                  <td class="d-mono">{{ row.trades.toLocaleString() }}</td>
+                  <td class="d-mono" :class="row.premium >= 0 ? 'd-up' : 'd-dn'">
+                    {{ fmtSignedMoney(row.premium) }}
+                  </td>
+                  <td class="d-mono">{{ fmtMoney(row.fee) }}</td>
+                  <td class="pnr-bar-col">
+                    <div class="pnr-bar-track">
+                      <div
+                        class="pnr-bar-fill"
+                        :class="row.premium >= 0 ? 'pnr-fill-up' : 'pnr-fill-dn'"
+                        :style="{ width: optBarWidth(row) }"
+                      ></div>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -77,6 +164,29 @@ const loading = ref(false)
 const error = ref('')
 const data = ref({})
 const tab = ref('profit')
+
+const optLoading = ref(false)
+const optError = ref('')
+const optionData = ref({})
+
+const optTotal = computed(() => optionData.value.total || {})
+const optionRows = computed(() => optionData.value.rows || [])
+
+const optMax = computed(() =>
+  Math.max(...optionRows.value.map((row) => Math.abs(Number(row.premium) || 0)), 1)
+)
+
+function optBarWidth(row) {
+  return `${Math.max((Math.abs(Number(row.premium) || 0) / optMax.value) * 100, 1)}%`
+}
+
+function fmtMoney(value) {
+  if (value == null || value === '') return '—'
+  const n = Number(value)
+  if (Math.abs(n) >= 100000000) return `${(n / 100000000).toFixed(2)}亿`
+  if (Math.abs(n) >= 10000) return `${(n / 10000).toFixed(2)}万`
+  return n.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+}
 
 const activeRows = computed(() =>
   tab.value === 'profit' ? data.value.profit_list || [] : data.value.loss_list || []
@@ -115,7 +225,25 @@ async function fetchRanking() {
   }
 }
 
-onMounted(fetchRanking)
+async function fetchOptions() {
+  optLoading.value = true
+  optError.value = ''
+  try {
+    const { data: res } = await client.get('/tables/option/pnl/')
+    optionData.value = res || {}
+  } catch (e) {
+    console.error('获取期权盈亏失败', e)
+    optError.value = '获取期权盈亏失败'
+    optionData.value = {}
+  } finally {
+    optLoading.value = false
+  }
+}
+
+onMounted(() => {
+  fetchRanking()
+  fetchOptions()
+})
 </script>
 
 <style scoped>
@@ -260,4 +388,38 @@ onMounted(fetchRanking)
 
 .pnr-fill-up { background: var(--up); }
 .pnr-fill-dn { background: var(--dn); }
+
+.opt-kpis {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.opt-kpis .k {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.opt-kpis .v {
+  font-size: 16px;
+  font-weight: 600;
+}
+@media (max-width: 900px) {
+  .opt-kpis { grid-template-columns: repeat(3, 1fr); }
+}
+
+.opt-table th:nth-child(3),
+.opt-table td:nth-child(3),
+.opt-table th:nth-child(4),
+.opt-table td:nth-child(4) {
+  width: 90px;
+}
+.opt-table th:nth-child(5),
+.opt-table td:nth-child(5) {
+  width: 130px;
+}
+.opt-table th:nth-child(6),
+.opt-table td:nth-child(6) {
+  width: 100px;
+}
 </style>

@@ -8,7 +8,7 @@ from django.utils.dateparse import parse_date
 from rest_framework import viewsets
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.filters import OrderingFilter
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from .registry import table_registry
@@ -412,7 +412,7 @@ def _get_unique_fields(model):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def advisor_performance(request):
     """投顾业绩聚合接口。
 
@@ -546,7 +546,7 @@ def advisor_performance(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def sector_varieties(request):
     """品种搜索列表，支持按品种代码或简称模糊查询。"""
     q = request.query_params.get('q', '').strip()
@@ -586,7 +586,7 @@ def sector_varieties(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def sector_contract_kline(request):
     """合约日K线数据。"""
     contract = request.query_params.get('contract', '').strip()
@@ -825,7 +825,7 @@ def sector_contract_kline(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def sector_advisor_variety(request):
     """单个投顾在单个品种上的累计盈亏与成交记录。
 
@@ -1016,7 +1016,7 @@ def sector_advisor_variety(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def sector_pnl(request):
     """品种盈亏页面数据。
 
@@ -1232,7 +1232,7 @@ def sector_pnl(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def advisor_trade_overview(request):
     """主观投顾交易品种统计：投顾 × 品种矩阵（成交额/保证金及占比）。
 
@@ -1501,7 +1501,7 @@ def advisor_trade_overview(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def sector_pnl_ranking(request):
     """盈亏分析：盈利/亏损品种列表。
 
@@ -1562,7 +1562,73 @@ def sector_pnl_ranking(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
+def option_pnl(request):
+    """期权盈亏：全体投顾所有期权合约的权利金净收支，按标的品种聚合。
+
+    期权合约无平仓盈亏（close_profit 为空），口径取 rh_trades.premium_income_expense
+    （权利金收支，正=净收入）。标的代码取合约前导字母，中文名经 fut_symbol_info 映射。
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT UPPER(REGEXP_SUBSTR(contract, '^[A-Za-z]+')) AS underlying,
+                   COUNT(DISTINCT contract),
+                   COUNT(*) AS trades,
+                   COUNT(DISTINCT account) AS advisors,
+                   SUM(COALESCE(premium_income_expense, 0)) AS premium,
+                   SUM(COALESCE(fee, 0)) AS fee
+            FROM rh_trades
+            WHERE contract REGEXP '^[A-Za-z]+[0-9]{3,4}-?[CP]-?'
+            GROUP BY underlying
+            ORDER BY premium DESC
+            """
+        )
+        agg = cursor.fetchall()
+        cursor.execute('SELECT MAX(trade_date) FROM rh_trades')
+        trade_date = cursor.fetchone()[0]
+        cursor.execute(
+            """
+            SELECT COUNT(DISTINCT account)
+            FROM rh_trades
+            WHERE contract REGEXP '^[A-Za-z]+[0-9]{3,4}-?[CP]-?'
+            """
+        )
+        total_advisors = cursor.fetchone()[0]
+        cursor.execute(
+            'SELECT UPPER(symbol_code), symbol_name FROM fut_symbol_info'
+        )
+        name_map = {code: name for code, name in cursor.fetchall()}
+
+    rows = [
+        {
+            'underlying': r[0],
+            'name': name_map.get(r[0], r[0]),
+            'contracts': int(r[1]),
+            'trades': int(r[2]),
+            'advisors': int(r[3]),
+            'premium': float(r[4] or 0),
+            'fee': float(r[5] or 0),
+        }
+        for r in agg
+    ]
+    total = {
+        'underlying_count': len(rows),
+        'contracts': sum(r['contracts'] for r in rows),
+        'trades': sum(r['trades'] for r in rows),
+        'advisors': int(total_advisors or 0),
+        'premium': sum(r['premium'] for r in rows),
+        'fee': sum(r['fee'] for r in rows),
+    }
+    return Response({
+        'trade_date': trade_date.isoformat() if trade_date else None,
+        'rows': rows,
+        'total': total,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
 def sector_bk_latest(request):
     """板块分析首模块：yl_perf_bk 最新一期的资产/保证金/风险度快照。"""
     with connection.cursor() as cursor:
@@ -1591,7 +1657,7 @@ def sector_bk_latest(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def sector_bk_margin(request):
     """板块总保证金分布：总资产 = 闲置资金 + 保证金占用 + 各板块保证金。
 
@@ -1643,7 +1709,7 @@ def sector_bk_margin(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def sector_bk_net_risk(request):
     """板块净持仓市值与10天风险度占比。"""
     with connection.cursor() as cursor:
@@ -1691,7 +1757,7 @@ def sector_bk_net_risk(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def variety_top_margin(request):
     """品种保证金前30：yl_perf_bk_detail 中 level=2 的各品种，保证金按多空合计(buy+sell)降序取前30。
 
@@ -1735,7 +1801,7 @@ def variety_top_margin(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def variety_top_net_risk(request):
     """品种净持仓市值与10天风险度占比前30。"""
     with connection.cursor() as cursor:
@@ -1790,7 +1856,7 @@ def variety_top_net_risk(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def sector_bk_detail_tree(request):
     """板块-品种-合约三级持仓明细树（yl_perf_bk_detail 最新一期）。
 
@@ -1898,7 +1964,7 @@ def sector_bk_detail_tree(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def sector_position_overview(request):
     """板块持仓概览：板块-品种-合约三级树。
 
@@ -2128,7 +2194,7 @@ def sector_position_overview(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def sector_board(request):
     """板块分析：板块指数走势与 MOM 板块配置概览。
 
@@ -2318,7 +2384,7 @@ def sector_board(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def variety_advisor_long_short(request):
     """品种维度的投顾多空数量热力表。"""
     metric_keys = [
