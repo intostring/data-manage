@@ -29,10 +29,10 @@
         <template v-else>
           <!-- Excel 式筛选栏 -->
           <div class="ato-filter">
-            <input v-model.trim="searchText" class="ato-ipt" placeholder="筛选投顾名称…" />
+            <input v-model.trim="searchText" name="advisor_search" autocomplete="off" class="ato-ipt" placeholder="筛选投顾名称…" />
             <div class="ato-fitem">
               <span class="ato-flab">品种数 ≥</span>
-              <input v-model.number="minVariety" type="number" min="0" class="ato-ipt ato-ipt-n" />
+              <input v-model.number="minVariety" name="min_variety" type="number" min="0" class="ato-ipt ato-ipt-n" />
             </div>
             <select v-model="sectorFilter" class="ato-ipt">
               <option value="">全部板块</option>

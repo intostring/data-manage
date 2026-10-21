@@ -57,13 +57,15 @@
         <div class="d-spacer"></div>
         <!-- 投顾搜索框（仅投顾业绩页显示） -->
         <div
-          v-if="route.name === 'display-advisor'"
+          v-if="route.name === 'display-advisor-detail'"
           ref="advisorComboRef"
           class="d-combo"
           style="position:relative;width:240px;margin-right:12px"
         >
           <input
             v-model="advisorStore.searchText"
+            name="advisor_search"
+            autocomplete="off"
             class="d-ipt"
             style="width:100%;font-size:12px;padding:4px 8px"
             placeholder="输入投顾名称、代码或ID搜索…"
@@ -96,6 +98,8 @@
         >
           <input
             v-model="varietySearchText"
+            name="variety_search"
+            autocomplete="off"
             class="d-ipt"
             style="width:100%;font-size:12px;padding:4px 8px"
             placeholder="输入品种代码或简称搜索…"
@@ -203,12 +207,21 @@ const modules = [
     ],
   },
   { name: 'display-risk', label: '风险控制', path: '/display/risk', icon: ShieldCheck },
-  { name: 'display-strategy', label: '策略分析', path: '/display/strategy', icon: LineChart },
+  {
+    name: 'display-strategy',
+    label: '策略分析',
+    path: '/display/strategy',
+    icon: LineChart,
+    children: [
+      { name: 'display-strategy-portfolio', label: '策略组合', path: '/display/strategy/portfolio' },
+    ],
+  },
 ]
 
 const titleMap = {
   'display-overview': '总览',
   'display-advisor': '投顾业绩',
+  'display-advisor-detail': '投顾业绩',
   'display-sector': '盈亏分析',
   'display-sector-pnl': '品种盈亏',
   'display-sector-advisor-variety': '品种投顾明细',
@@ -222,11 +235,18 @@ const titleMap = {
   'display-trade-advisor-overview': '投顾交易概况',
   'display-risk': '风险控制',
   'display-strategy': '策略分析',
+  'display-strategy-portfolio': '策略组合',
+  'display-strategy-portfolio-create': '创建组合',
+  'display-strategy-portfolio-detail': '组合分析',
 }
 
 const currentTitle = computed(() => titleMap[route.name] || '分析展示')
 
 function isActive(name) {
+  // 投顾业绩详情页时，「投顾业绩」父项保持高亮
+  if (name === 'display-advisor') {
+    return route.name === 'display-advisor' || route.name === 'display-advisor-detail'
+  }
   return route.name === name
 }
 
@@ -328,11 +348,11 @@ onUnmounted(() => {
   document.removeEventListener('pointerdown', onDocumentPointerDown)
 })
 
-// 进入投顾业绩页时加载投顾列表
+// 进入投顾业绩详情页时加载投顾列表
 watch(() => route.name, (name) => {
   closeAdvisorDropdown()
   closeVarietyDropdown()
-  if (name === 'display-advisor' && !advisorStore.advisors.length) {
+  if (name === 'display-advisor-detail' && !advisorStore.advisors.length) {
     advisorStore.fetchAdvisors()
   }
 }, { immediate: true })

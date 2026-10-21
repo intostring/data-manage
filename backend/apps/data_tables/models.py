@@ -759,3 +759,22 @@ class TradeDays(models.Model):
         db_table = 'trade_days'
         unique_together = (('calendar_date', 'exchange_cd'),)
         db_table_comment = '交易日期表'
+
+
+class StrategyPortfolioRecord(models.Model):
+    """自定义策略组合（用户保存的组合，参考火富牛基金组合模块）。"""
+
+    id = models.BigAutoField(primary_key=True)
+    name = models.CharField(max_length=100, db_comment='组合名称')
+    note = models.CharField(max_length=255, blank=True, default='', db_comment='备注')
+    pids = models.JSONField(db_comment='成分投顾 pid 列表')
+    weights = models.JSONField(blank=True, null=True, db_comment='自定义权重（百分数，与 pids 对应）')
+    weight_model = models.CharField(
+        max_length=20, default='equal',
+        db_comment='权重模型：equal 等权 / mv 均值方差 / rp 风险平价 / custom 自定义',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'strategy_portfolio_record'

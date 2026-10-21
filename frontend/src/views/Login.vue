@@ -68,6 +68,7 @@
               <User :size="15" class="lg-field-icon" />
               <input
                 v-model="form.username"
+                name="username"
                 type="text"
                 placeholder="请输入用户名"
                 autocomplete="username"
@@ -83,6 +84,7 @@
               <Lock :size="15" class="lg-field-icon" />
               <input
                 v-model="form.password"
+                name="password"
                 :type="showPwd ? 'text' : 'password'"
                 placeholder="请输入密码"
                 autocomplete="current-password"

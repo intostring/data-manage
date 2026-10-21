@@ -19,16 +19,16 @@
             </button>
           </div>
           <div class="ck-query">
-            <input v-model="queryContract" class="d-ipt" placeholder="合约代码" @keydown.enter="applyQuery" />
-            <input v-model="queryAccount" class="d-ipt" placeholder="投顾代码" @keydown.enter="applyQuery" />
+            <input v-model="queryContract" name="contract_code" class="d-ipt" placeholder="合约代码" @keydown.enter="applyQuery" />
+            <input v-model="queryAccount" name="advisor_code" class="d-ipt" placeholder="投顾代码" @keydown.enter="applyQuery" />
             <button type="button" class="d-btn" @click="applyQuery">查询</button>
           </div>
         </div>
       </div>
       <div v-if="selectedWindow === 'custom'" class="ck-custom-row">
-        <input v-model="customStartDate" type="date" />
+        <input v-model="customStartDate" name="start_date" type="date" />
         <span>至</span>
-        <input v-model="customEndDate" type="date" />
+        <input v-model="customEndDate" name="end_date" type="date" />
         <button type="button" @click="applyCustomWindow">查询</button>
       </div>
       <div class="d-card-b">
@@ -204,7 +204,7 @@
         </div>
         <div class="ck-page-jump">
           <span>前往</span>
-          <input v-model="tradeJumpPage" type="number" min="1" :max="totalTradePages" @keydown.enter="goToTradePage" />
+          <input v-model="tradeJumpPage" name="jump_page" type="number" min="1" :max="totalTradePages" @keydown.enter="goToTradePage" />
           <span>页</span>
           <button type="button" @click="goToTradePage">go</button>
         </div>

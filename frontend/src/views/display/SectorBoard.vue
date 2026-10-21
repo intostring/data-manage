@@ -83,7 +83,7 @@
           <div class="opt-kpis">
             <div>
               <div class="k">权利金净收支</div>
-              <div class="v d-mono" :class="optTotal.premium >= 0 ? 'd-up' : 'd-dn'">
+              <div class="v d-mono" :class="(optTotal.premium ?? 0) >= 0 ? 'd-up' : 'd-dn'">
                 {{ fmtSignedMoney(optTotal.premium) }}
               </div>
             </div>
@@ -93,19 +93,19 @@
             </div>
             <div>
               <div class="k">参与投顾</div>
-              <div class="v d-mono">{{ optTotal.advisors }}</div>
+              <div class="v d-mono">{{ optTotal.advisors ?? '—' }}</div>
             </div>
             <div>
               <div class="k">期权标的</div>
-              <div class="v d-mono">{{ optTotal.underlying_count }}</div>
+              <div class="v d-mono">{{ optTotal.underlying_count ?? '—' }}</div>
             </div>
             <div>
               <div class="k">合约数</div>
-              <div class="v d-mono">{{ optTotal.contracts }}</div>
+              <div class="v d-mono">{{ optTotal.contracts ?? '—' }}</div>
             </div>
             <div>
               <div class="k">成交笔数</div>
-              <div class="v d-mono">{{ optTotal.trades.toLocaleString() }}</div>
+              <div class="v d-mono">{{ (optTotal.trades ?? 0).toLocaleString() }}</div>
             </div>
           </div>
 
@@ -131,9 +131,9 @@
                     <span class="pnr-name">{{ row.name }}</span>
                     <span class="pnr-code">{{ row.underlying }}</span>
                   </td>
-                  <td class="d-mono">{{ row.contracts }}</td>
-                  <td class="d-mono">{{ row.trades.toLocaleString() }}</td>
-                  <td class="d-mono" :class="row.premium >= 0 ? 'd-up' : 'd-dn'">
+                  <td class="d-mono">{{ row.contracts ?? '—' }}</td>
+                  <td class="d-mono">{{ (row.trades ?? 0).toLocaleString() }}</td>
+                  <td class="d-mono" :class="(row.premium ?? 0) >= 0 ? 'd-up' : 'd-dn'">
                     {{ fmtSignedMoney(row.premium) }}
                   </td>
                   <td class="d-mono">{{ fmtMoney(row.fee) }}</td>

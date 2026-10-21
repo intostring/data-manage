@@ -25,6 +25,7 @@
         </BaseButton>
         <input
           ref="importInput"
+          name="import_file"
           type="file"
           accept=".xlsx,.xls"
           class="hidden"
@@ -105,6 +106,7 @@
           <label class="block text-sm text-ink-muted">{{ col.label }}</label>
           <input
             v-model="form[col.key]"
+            :name="col.key"
             type="date"
             class="w-full px-3 py-2 border border-line rounded bg-panelLight text-ink focus:border-accent focus:outline-none"
           />

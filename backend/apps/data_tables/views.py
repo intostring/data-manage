@@ -1,5 +1,5 @@
 import re
-from datetime import timedelta
+from datetime import date as _date, timedelta
 
 from django.db import connection, models
 from django.db.models import Q
@@ -411,6 +411,285 @@ def _get_unique_fields(model):
     return unique_single
 
 
+def _merged_nav_metrics(daily):
+    """根据 [(date, equity, flow)] 日序列用份额法计算净值与风险指标。
+
+    equity = Σ结算权益（rh_funds.settle_balance），flow = Σ出入金（deposit - withdraw）。
+    份额法：share_t = share_{t-1} + flow_t / nav_{t-1}；nav_t = equity_t / share_t。
+    返回 dict(total_return, annual_yield, annual_volatility, max_drawdown,
+    sharpe_ratio, calmar_ratio)（百分数口径，与列表其他行一致）。
+    """
+    import math
+    import statistics
+
+    navs = []
+    share = None
+    prev_nav = 1.0
+    for _, equity, flow in daily:
+        equity = float(equity or 0)
+        flow = float(flow or 0)
+        if share is None:
+            if equity <= 0:
+                continue
+            share = equity
+            navs.append(1.0)
+            continue
+        share += flow / prev_nav
+        nav = equity / share if share > 0 else prev_nav
+        navs.append(nav)
+        prev_nav = nav
+    if len(navs) < 2:
+        return None
+
+    rets = [navs[i] / navs[i - 1] - 1 for i in range(1, len(navs))]
+    total_return = navs[-1] - 1
+    days = len(rets)
+    annual_yield = (1 + total_return) ** (252 / days) - 1
+    annual_vol = statistics.stdev(rets) * math.sqrt(252) if days >= 2 else None
+    peak, max_dd = 1.0, 0.0
+    for nav in navs:
+        peak = max(peak, nav)
+        max_dd = min(max_dd, nav / peak - 1)
+    # 无风险利率取 1.5%
+    risk_free = 0.015
+    sharpe = ((annual_yield - risk_free) / annual_vol) if annual_vol else None
+    calmar = (annual_yield / abs(max_dd)) if max_dd < 0 else None
+
+    return {
+        'total_return': round(total_return * 100, 4),
+        'annual_yield': round(annual_yield * 100, 4),
+        'annual_volatility': round(annual_vol * 100, 4) if annual_vol is not None else None,
+        'max_drawdown': round(max_dd * 100, 4),
+        'sharpe_ratio': round(sharpe, 4) if sharpe is not None else None,
+        'calmar_ratio': round(calmar, 4) if calmar is not None else None,
+    }
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def advisor_performance_list(request):
+    """投顾业绩列表（投顾业绩板块首页）。
+
+    全部投顾的业绩指标统一现算：净值按 rh_funds 结算权益 + 出入金用份额法还原，
+    总收益/年化/夏普（无风险利率 1.5%）/卡玛/波动/回撤均由该净值序列推导；
+    平均仓位为成立以来 Σ保证金/Σ权益 的日均值。
+
+    ?merge=1：同名投顾（mom_account_record.account_name 相同）多账号合并为一行；
+    默认逐账号一行。
+    """
+    from collections import defaultdict
+
+    merge = request.query_params.get('merge') == '1'
+
+    sql = """
+        SELECT p.pid,
+               COALESCE(m.account_name, p.product_name)      AS account_name,
+               m.account_name                                AS raw_name,
+               p.product_name                                AS account_code,
+               m.cum_investment,
+               m.invest_logic,
+               m.invest_cate,
+               m.is_stop,
+               nd.last_nav_date
+        FROM perf_products p
+        JOIN (
+            SELECT DISTINCT pid FROM perf_net_values WHERE net_value IS NOT NULL
+        ) nv ON nv.pid = p.pid
+        LEFT JOIN mom_account_record m ON m.account_id = p.product_name
+        LEFT JOIN (
+            SELECT pid, MAX(trade_date) AS last_nav_date
+            FROM perf_net_values
+            WHERE net_value IS NOT NULL AND trade_date IS NOT NULL
+            GROUP BY pid
+        ) nd ON nd.pid = p.pid
+        ORDER BY p.pid
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(sql)
+        cols = [col[0] for col in cursor.description]
+        rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+    for row in rows:
+        row['cum_investment'] = float(row['cum_investment']) if row['cum_investment'] is not None else None
+
+    # 无账户记录（is_stop 为 NULL）的投顾用净值新鲜度推断停止状态：
+    # 最新净值落后全库最新净值超过 30 天视为已终止
+    global_last_nav = max((r['last_nav_date'] for r in rows if r.get('last_nav_date')), default=None)
+    for row in rows:
+        if row['is_stop'] is None:
+            stale = (
+                global_last_nav is not None
+                and row.get('last_nav_date') is not None
+                and (global_last_nav - row['last_nav_date']).days > 30
+            )
+            row['is_stop'] = 1 if stale else 0
+
+    # ---- 分组：merge=1 按 raw_name 合并同名账号；否则每账号一组 ----
+    groups = defaultdict(list)
+    for row in rows:
+        if merge and row['raw_name']:
+            groups[row['raw_name']].append(row)
+        else:
+            groups[f"__single__{row['pid']}"].append(row)
+
+    # ---- 拉取各组账号的 rh_funds 日序列，份额法现算指标与仓位 ----
+    all_accounts = {r['account_code'] for r in rows}
+    funds_by_account = defaultdict(list)  # account -> [(date, settle_balance, margin, flow)]
+    if all_accounts:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT trade_date, account, settle_balance, margin,
+                       COALESCE(deposit_amount, 0) - COALESCE(withdraw_amount, 0) AS flow
+                FROM rh_funds
+                WHERE account IN %s AND trade_date IS NOT NULL
+                ORDER BY trade_date
+            """, [tuple(all_accounts)])
+            for d, acc, balance, margin, flow in cursor.fetchall():
+                funds_by_account[acc].append((d, float(balance or 0), float(margin or 0), float(flow or 0)))
+
+    result = []
+    for key, g in groups.items():
+        is_merged = merge and len(g) > 1
+        # 组内各账号按日聚合
+        daily = defaultdict(lambda: [0.0, 0.0, 0.0])  # date -> [equity, margin, flow]
+        for row in g:
+            for d, balance, margin, flow in funds_by_account.get(row['account_code'], []):
+                v = daily[d]
+                v[0] += balance
+                v[1] += margin
+                v[2] += flow
+        series = [(d, v[0], v[2]) for d, v in sorted(daily.items())]
+        metrics = _merged_nav_metrics(series) or {}
+        # 平均仓位：成立以来 Σmargin/Σequity 日均
+        ratios = [v[1] / v[0] * 100 for v in daily.values() if v[0] > 0]
+        avg_position = round(sum(ratios) / len(ratios), 2) if ratios else None
+
+        def _pick(field):
+            for row in g:
+                if row.get(field):
+                    return row[field]
+            return None
+
+        # 投资金额：合并组内已停止账号不纳入；全组停止回退为全部合计
+        active = [r for r in g if r['is_stop'] != 1]
+        invest_rows = active if (is_merged and active) else g
+
+        first = g[0]
+        result.append({
+            'pid': first['pid'],
+            'pids': [row['pid'] for row in g],
+            'account_name': first['raw_name'] if is_merged else first['account_name'],
+            'account_code': '、'.join(row['account_code'] for row in g),
+            'account_codes': [row['account_code'] for row in g],
+            'account_count': len(g),
+            'merged': is_merged,
+            'cum_investment': sum((r['cum_investment'] or 0) for r in invest_rows) or None,
+            'invest_logic': _pick('invest_logic'),
+            'invest_cate': _pick('invest_cate'),
+            # 合并组内全部停止才算终止
+            'is_stop': 1 if all(r['is_stop'] == 1 for r in g) else 0,
+            'avg_position': avg_position,
+            **{k: metrics.get(k) for k in (
+                'total_return', 'annual_yield', 'sharpe_ratio',
+                'calmar_ratio', 'annual_volatility', 'max_drawdown')},
+        })
+
+    result.sort(key=lambda r: -(r.get('total_return') if r.get('total_return') is not None else -9999))
+    return Response(result)
+
+
+def _load_nhci_returns():
+    """南华商品指数（NHCI.NH）日收益率 {date: r}，作为指标计算基准。"""
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT trade_date, pct_chg FROM idx_nh_daily
+            WHERE ts_code = 'NHCI.NH' AND pct_chg IS NOT NULL
+            ORDER BY trade_date
+        """)
+        return {d: float(p) for d, p in cursor.fetchall()}
+
+
+def _benchmark_series_for_dates(dates):
+    """基准指数（NHCI.NH）在与给定日期序列对齐的累计收益曲线（首日为 0，百分数）。
+
+    基准当日无数据按 0 收益处理，保证与组合 nav_series 逐日一一对应，
+    前端可直接按下标计算超额收益（组合累计 − 基准累计）。
+    """
+    bench = _load_nhci_returns()
+    nav_b = 1.0
+    out = []
+    for i, d in enumerate(dates):
+        if i > 0:
+            nav_b *= (1 + bench.get(d, 0.0))
+        out.append({'date': d.isoformat(), 'cum_return': round((nav_b - 1) * 100, 4)})
+    return out
+
+
+def _nav_window_metrics(navs, bench_rets=None):
+    """由净值序列 [(date, nav)] 计算单窗口风险指标（小数口径，与 perf_risk_indicators 一致）。
+
+    无风险利率 1.5%；
+    bench_rets 为基准日收益 {date: r}（南华商品指数 NHCI.NH）时，
+    另行计算 beta / Jensen 年化 alpha / 信息比率，否则置 None。
+    """
+    import math
+    import statistics
+
+    empty = {k: None for k in (
+        'annual_yield', 'annual_volatility', 'max_drawdown',
+        'sharpe_ratio', 'kama_ratio', 'info_ratio', 'alpha', 'beta')}
+    if len(navs) < 2:
+        return empty
+
+    rets = [navs[i][1] / navs[i - 1][1] - 1 for i in range(1, len(navs))]
+    total = navs[-1][1] / navs[0][1] - 1
+    days = len(rets)
+    annual_yield = (1 + total) ** (252 / days) - 1
+    annual_vol = statistics.stdev(rets) * math.sqrt(252) if days >= 2 else None
+    peak, max_dd = navs[0][1], 0.0
+    for _, nav in navs:
+        peak = max(peak, nav)
+        max_dd = min(max_dd, nav / peak - 1)
+    sharpe = ((annual_yield - 0.015) / annual_vol) if annual_vol else None
+    kama = (annual_yield / abs(max_dd)) if max_dd < 0 else None
+
+    info_ratio = alpha = beta = None
+    if bench_rets:
+        # 按日期对齐组合日收益与基准日收益
+        pr, br = [], []
+        for i in range(1, len(navs)):
+            b = bench_rets.get(navs[i][0])
+            if b is not None:
+                pr.append(navs[i][1] / navs[i - 1][1] - 1)
+                br.append(b)
+        if len(pr) >= 3:
+            mean_p, mean_b = statistics.mean(pr), statistics.mean(br)
+            var_b = statistics.pvariance(br)
+            cov_pb = sum((pr[i] - mean_p) * (br[i] - mean_b) for i in range(len(pr))) / len(pr)
+            if var_b > 0:
+                beta = cov_pb / var_b
+                # Jensen 年化 alpha：组合年化 − rf − β×(基准年化 − rf)
+                ann_p = (1 + mean_p) ** 252 - 1
+                ann_b = (1 + mean_b) ** 252 - 1
+                alpha = (ann_p - 0.015) - beta * (ann_b - 0.015)
+            excess = [pr[i] - br[i] for i in range(len(pr))]
+            if len(excess) >= 3:
+                te_annual = statistics.stdev(excess) * math.sqrt(252)
+                if te_annual > 0:
+                    info_ratio = (statistics.mean(excess) * 252) / te_annual
+
+    return {
+        'annual_yield': annual_yield,
+        'annual_volatility': annual_vol,
+        'max_drawdown': max_dd,
+        'sharpe_ratio': sharpe,
+        'kama_ratio': kama,
+        'info_ratio': info_ratio,
+        'alpha': alpha,
+        'beta': beta,
+    }
+
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def advisor_performance(request):
@@ -418,6 +697,8 @@ def advisor_performance(request):
 
     无参数：返回投顾产品列表 [{pid, product_name}]
     ?pid=xxx：返回单个投顾的基本信息 + 风险收益指标
+    ?pid=xxx&merge=1：同名多账号合并详情——净值由 rh_funds 市值+出入金份额法现算，
+    指标（since/1y/2y/3y）由该净值序列切窗推导
     """
     from .models import PerfHeaderStats, PerfProducts, PerfRiskIndicators, PerfNetValues, MomAccountRecord
 
@@ -461,6 +742,131 @@ def advisor_performance(request):
     if not product:
         return Response({'detail': f'未找到 pid={pid} 的产品'}, status=404)
 
+    # ---- 合并模式：同名多账号合并详情 ----
+    if request.query_params.get('merge') == '1':
+        from collections import defaultdict
+        from datetime import timedelta
+
+        base_acct = MomAccountRecord.objects.filter(account_id=product.product_name).first()
+        group_products = [product]
+        if base_acct and base_acct.account_name:
+            same_name = MomAccountRecord.objects.filter(account_name=base_acct.account_name)
+            codes = [m.account_id for m in same_name]
+            group_products = list(PerfProducts.objects.filter(product_name__in=codes))
+            if product not in group_products:
+                group_products.insert(0, product)
+        accounts = [p.product_name for p in group_products]
+
+        # 合并净值：rh_funds 份额法
+        daily = defaultdict(lambda: [0.0, 0.0, 0.0])  # date -> [equity, margin, flow]
+        if accounts:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT trade_date, account, settle_balance, margin,
+                           COALESCE(deposit_amount, 0) - COALESCE(withdraw_amount, 0) AS flow
+                    FROM rh_funds
+                    WHERE account IN %s AND trade_date IS NOT NULL
+                    ORDER BY trade_date
+                """, [tuple(accounts)])
+                for d, acc, balance, margin, flow in cursor.fetchall():
+                    v = daily[d]
+                    v[0] += float(balance or 0)
+                    v[1] += float(margin or 0)
+                    v[2] += float(flow or 0)
+
+        navs = []  # [(date, nav)]
+        share = None
+        prev_nav = 1.0
+        for d, (equity, _margin, flow) in sorted(daily.items()):
+            if share is None:
+                if equity <= 0:
+                    continue
+                share = equity
+                navs.append((d, 1.0))
+                continue
+            share += flow / prev_nav
+            nav = equity / share if share > 0 else prev_nav
+            navs.append((d, nav))
+            prev_nav = nav
+
+        nav_series = []
+        peak = None
+        base = navs[0][1] if navs else None
+        for d, nav in navs:
+            if peak is None or nav > peak:
+                peak = nav
+            nav_series.append({
+                'date': d.isoformat(),
+                'nav': round(nav, 6),
+                'cum_return': round((nav / base - 1) * 100, 4) if base else 0.0,
+                'drawdown': round((nav / peak - 1) * 100, 4) if peak else 0.0,
+            })
+
+        # 指标：since 全区间 + 1y/2y/3y 切窗（基准：南华商品指数 NHCI.NH）
+        risk_periods = ['1y', '2y', '3y', 'since']
+        risk_metrics = [
+            'annual_yield', 'annual_volatility', 'max_drawdown',
+            'sharpe_ratio', 'kama_ratio', 'info_ratio', 'alpha', 'beta',
+        ]
+        risk_table = None
+        indicators = {}
+        if len(navs) >= 2:
+            bench_rets = _load_nhci_returns()
+            last_date = navs[-1][0]
+            windows = {'since': navs}
+            for label, days_back in (('1y', 365), ('2y', 730), ('3y', 1095)):
+                cutoff = last_date - timedelta(days=days_back)
+                windows[label] = [x for x in navs if x[0] >= cutoff] or navs[-1:]
+            window_metrics = {label: _nav_window_metrics(seq, bench_rets) for label, seq in windows.items()}
+            risk_table = {
+                metric: {p: window_metrics[p][metric] for p in risk_periods}
+                for metric in risk_metrics
+            }
+            since_m = window_metrics['since']
+            indicators = {
+                'total_return': navs[-1][1] / navs[0][1] - 1,
+                **{k: since_m[k] for k in risk_metrics},
+            }
+
+        # 合并 info
+        accts = {m.account_id: m for m in MomAccountRecord.objects.filter(account_id__in=accounts)}
+        def _pick(field):
+            for code in accounts:
+                a = accts.get(code)
+                if a and getattr(a, field):
+                    return getattr(a, field)
+            return None
+        active_codes = [c for c in accounts if accts.get(c) and accts[c].is_stop != 1]
+        invest_codes = active_codes if active_codes else accounts
+        info = {
+            'pid': product.pid,
+            'product_name': _pick('account_name') or product.product_name,
+            'group_name': None,
+            'product_type': product.product_type,
+            'last_edit_ts': product.last_edit_ts,
+            'data_update_date': navs[-1][0].isoformat() if navs else None,
+            'account_name': _pick('account_name'),
+            'account_code': '、'.join(accounts),
+            'account_codes': accounts,
+            'account_count': len(accounts),
+            'merged': True,
+            'is_stop': 1 if accounts and all(
+                accts.get(c) and accts[c].is_stop == 1 for c in accounts) else 0,
+            'invest_logic': _pick('invest_logic'),
+            'invest_cate': _pick('invest_cate'),
+            'cum_investment': sum(
+                float(accts[c].cum_investment or 0) for c in invest_codes
+                if accts.get(c)) or None,
+        }
+
+        return Response({
+            'info': info,
+            'indicators': indicators,
+            'risk_table': risk_table,
+            'nav_series': nav_series,
+            'benchmark_series': _benchmark_series_for_dates([d for d, _ in navs]) if navs else [],
+        })
+
     risk = PerfRiskIndicators.objects.filter(pid=pid_int).first()
     header = PerfHeaderStats.objects.filter(pid=pid_int, trade_date__isnull=False).order_by('-trade_date').first()
 
@@ -469,6 +875,12 @@ def advisor_performance(request):
 
     # 基本信息
     rj = product.raw_json or {}
+    # 该投顾是否属于同名多账号组（用于前端提供「查看合并业绩」入口）
+    mergeable = False
+    if acct and acct.account_name:
+        mergeable = MomAccountRecord.objects.filter(
+            account_name=acct.account_name
+        ).count() > 1
     info = {
         'pid': product.pid,
         'product_name': product.product_name,
@@ -483,6 +895,7 @@ def advisor_performance(request):
         'invest_logic': acct.invest_logic if acct else None,
         'invest_cate': acct.invest_cate if acct else None,
         'product_name_cn': acct.product_name if acct else None,
+        'mergeable': mergeable,
     }
 
     # 风险收益指标：投顾业绩顶部基本数据取成立以来口径
@@ -542,6 +955,12 @@ def advisor_performance(request):
         'indicators': indicators,
         'risk_table': risk_table,
         'nav_series': nav_series,
+        'benchmark_series': (
+            _benchmark_series_for_dates([
+                _date.fromisoformat(p['date'])
+                for p in nav_series if p['date']
+            ]) if nav_series else []
+        ),
     })
 
 
@@ -1570,6 +1989,58 @@ def option_pnl(request):
     （权利金收支，正=净收入）。标的代码取合约前导字母，中文名经 fut_symbol_info 映射。
     """
     with connection.cursor() as cursor:
+        try:
+            cursor.execute('SELECT MAX(trade_date) FROM yl_option_pnl_summary')
+            summary_trade_date = cursor.fetchone()[0]
+        except Exception:
+            summary_trade_date = None
+
+        if summary_trade_date:
+            cursor.execute(
+                """
+                SELECT
+                    underlying,
+                    underlying_name,
+                    contracts,
+                    trades,
+                    advisors,
+                    total_advisors,
+                    premium,
+                    fee
+                FROM yl_option_pnl_summary
+                WHERE trade_date = %s
+                ORDER BY premium DESC
+                """,
+                [summary_trade_date],
+            )
+            summary_rows = cursor.fetchall()
+            rows = [
+                {
+                    'underlying': r[0],
+                    'name': r[1] or r[0],
+                    'contracts': int(r[2] or 0),
+                    'trades': int(r[3] or 0),
+                    'advisors': int(r[4] or 0),
+                    'premium': float(r[6] or 0),
+                    'fee': float(r[7] or 0),
+                }
+                for r in summary_rows
+            ]
+            total = {
+                'underlying_count': len(rows),
+                'contracts': sum(r['contracts'] for r in rows),
+                'trades': sum(r['trades'] for r in rows),
+                'advisors': int(summary_rows[0][5] or 0) if summary_rows else 0,
+                'premium': sum(r['premium'] for r in rows),
+                'fee': sum(r['fee'] for r in rows),
+            }
+            return Response({
+                'trade_date': summary_trade_date.isoformat() if summary_trade_date else None,
+                'rows': rows,
+                'total': total,
+                'source': 'summary',
+            })
+
         cursor.execute(
             """
             SELECT UPPER(REGEXP_SUBSTR(contract, '^[A-Za-z]+')) AS underlying,
@@ -1624,6 +2095,7 @@ def option_pnl(request):
         'trade_date': trade_date.isoformat() if trade_date else None,
         'rows': rows,
         'total': total,
+        'source': 'realtime',
     })
 
 
@@ -2642,6 +3114,385 @@ def variety_advisor_long_short(request):
         'rows': rows,
         'columns': metric_keys,
     })
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def strategy_portfolio(request):
+    """自定义策略组合分析（参考火富牛基金组合模块）。
+
+    ?pids=1,2,3            组合成分投顾 pid 列表（必填）
+    ?model=equal           权重模型：equal 等权 / mv 均值方差 / rp 风险平价 / custom 自定义
+    ?weights=30,30,40      custom 模型下的自定义权重（百分数或小数均可，自动归一化）
+
+    智能模型基于各成分投顾日收益率序列在接口内现算：
+    - rp  风险平价：等风险贡献（ERC），协方差坐标下降迭代求解
+    - mv  均值方差：最大夏普切点组合 w ∝ Σ⁻¹μ，负权截断归一
+    组合日收益率 = Σ(成分日收益率 × 权重)，成分当日缺净值按 0 处理。
+    """
+    import math
+    import statistics
+
+    from .models import MomAccountRecord, PerfHeaderStats, PerfNetValues, PerfProducts
+
+    pids_raw = request.query_params.get('pids', '').strip()
+    weights_raw = request.query_params.get('weights', '').strip()
+    model = (request.query_params.get('model') or 'equal').strip().lower()
+    if model not in ('equal', 'mv', 'rp', 'custom'):
+        return Response({'detail': 'model 仅支持 equal / mv / rp / custom'}, status=400)
+    if not pids_raw:
+        return Response({'detail': '缺少 pids 参数'}, status=400)
+
+    try:
+        pids = [int(x) for x in re.split(r'[,\s]+', pids_raw) if x]
+    except ValueError:
+        return Response({'detail': 'pids 参数无效'}, status=400)
+    pids = list(dict.fromkeys(pids))[:20]  # 去重，最多 20 个
+    if not pids:
+        return Response({'detail': 'pids 参数无效'}, status=400)
+
+    # 各成分投顾净值序列 {pid: {date: nv}}
+    nav_qs = (
+        PerfNetValues.objects
+        .filter(pid__in=pids, trade_date__isnull=False, net_value__isnull=False)
+        .order_by('trade_date')
+        .values_list('pid', 'trade_date', 'net_value')
+    )
+    nav_map = {pid: {} for pid in pids}
+    for pid, d, nv in nav_qs:
+        if nv and nv > 0:
+            nav_map[pid][d] = nv
+
+    # 只保留有净值数据的成分
+    valid_pids = [pid for pid in pids if nav_map[pid]]
+    if not valid_pids:
+        return Response({'detail': '所选投顾均无净值数据'}, status=404)
+    n = len(valid_pids)
+
+    # 成分日收益率：r_t = nv_t / nv_{t-1} - 1
+    daily_ret = {}
+    for pid in valid_pids:
+        series = sorted(nav_map[pid].items())
+        rets = {}
+        prev = None
+        for d, nv in series:
+            if prev is not None:
+                rets[d] = nv / prev - 1
+            prev = nv
+        daily_ret[pid] = rets
+
+    # ---- 权重模型计算 ----
+    def _mat_vec_mul(mat, vec):
+        return [sum(mat[i][j] * vec[j] for j in range(len(vec))) for i in range(len(mat))]
+
+    def _solve_linear(mat, vec):
+        """高斯消元解 mat·x = vec（含主元选取）；奇异时加对角正则化重试。"""
+        size = len(vec)
+        for reg_attempts in range(4):
+            m = [row[:] for row in mat]
+            if reg_attempts:
+                lam = 1e-8 * (10 ** reg_attempts)
+                m = [[m[i][j] + (lam if i == j else 0.0) for j in range(size)] for i in range(size)]
+            b = vec[:]
+            try:
+                for col in range(size):
+                    pivot = max(range(col, size), key=lambda r: abs(m[r][col]))
+                    if abs(m[pivot][col]) < 1e-14:
+                        raise ZeroDivisionError
+                    m[col], m[pivot] = m[pivot], m[col]
+                    b[col], b[pivot] = b[pivot], b[col]
+                    for r in range(col + 1, size):
+                        factor = m[r][col] / m[col][col]
+                        for c in range(col, size):
+                            m[r][c] -= factor * m[col][c]
+                        b[r] -= factor * b[col]
+                x = [0.0] * size
+                for i in range(size - 1, -1, -1):
+                    x[i] = (b[i] - sum(m[i][j] * x[j] for j in range(i + 1, size))) / m[i][i]
+                return x
+            except ZeroDivisionError:
+                continue
+        return None
+
+    def _compute_weights():
+        """按权重模型返回归一化权重列表；失败回退等权。"""
+        if model == 'custom':
+            if not weights_raw:
+                return [1.0 / n] * n, 'custom:未提供权重，回退等权'
+            try:
+                ws = [float(x) for x in re.split(r'[,\s]+', weights_raw) if x]
+            except ValueError:
+                return [1.0 / n] * n, 'custom:权重解析失败，回退等权'
+            if len(ws) != n or any(w < 0 for w in ws) or sum(ws) <= 0:
+                return [1.0 / n] * n, 'custom:权重数量/取值无效，回退等权'
+            s = sum(ws)
+            return [w / s for w in ws], None
+
+        if model == 'equal':
+            return [1.0 / n] * n, None
+
+        # 智能模型：基于日收益率矩阵（缺失日按 0）
+        all_d = sorted(set().union(*(set(daily_ret[pid].keys()) for pid in valid_pids)))
+        if len(all_d) < max(20, n + 5):
+            return [1.0 / n] * n, f'{model}:样本不足，回退等权'
+        mat = [[daily_ret[pid].get(d, 0.0) for d in all_d] for pid in valid_pids]
+        obs = len(all_d)
+        mu = [sum(col) / obs for col in mat]
+        cov = [[0.0] * n for _ in range(n)]
+        for i in range(n):
+            for j in range(i, n):
+                c = sum((mat[i][t] - mu[i]) * (mat[j][t] - mu[j]) for t in range(obs)) / (obs - 1)
+                cov[i][j] = cov[j][i] = c
+
+        if model == 'rp':
+            # 等风险贡献（ERC）坐标下降迭代：x_i ← [−(Σx)_i + x_i σ_ii + √((Σx−x_iσ_ii)² + 4σ_ii/n)] / (2σ_ii)
+            x = [1.0 / max(math.sqrt(cov[i][i]), 1e-12) for i in range(n)]
+            s = sum(x)
+            x = [v / s for v in x]
+            for _ in range(200):
+                prev_x = x[:]
+                for i in range(n):
+                    sx = _mat_vec_mul(cov, x)
+                    a = sx[i] - x[i] * cov[i][i]
+                    x[i] = (-a + math.sqrt(a * a + 4 * cov[i][i] / n)) / (2 * cov[i][i])
+                s = sum(x)
+                x = [v / s for v in x]
+                if max(abs(x[i] - prev_x[i]) for i in range(n)) < 1e-10:
+                    break
+            return x, None
+
+        if model == 'mv':
+            # 最大夏普切点组合：w ∝ Σ⁻¹μ；负权截断为 0 后归一
+            w = _solve_linear(cov, mu)
+            if w is None:
+                return [1.0 / n] * n, 'mv:协方差矩阵奇异，回退等权'
+            w = [max(v, 0.0) for v in w]
+            s = sum(w)
+            if s <= 0:
+                return [1.0 / n] * n, 'mv:求解退化，回退等权'
+            return [v / s for v in w], None
+
+        return [1.0 / n] * n, None
+
+    weights, weight_note = _compute_weights()
+
+    # 交易日并集（各成分任一有净值/收益的日期）
+    all_dates = sorted(set().union(*(set(nav_map[pid].keys()) for pid in valid_pids)))
+
+    # 组合净值/累计收益/回撤
+    port_nav = 1.0
+    peak = 1.0
+    nav_series = []
+    port_rets = []
+    for d in all_dates:
+        r = sum(w * daily_ret[pid].get(d, 0.0) for pid, w in zip(valid_pids, weights))
+        port_nav *= (1 + r)
+        if port_nav > peak:
+            peak = port_nav
+        drawdown = port_nav / peak - 1
+        nav_series.append({
+            'date': d.isoformat(),
+            'nav': round(port_nav, 6),
+            'cum_return': round((port_nav - 1) * 100, 4),
+            'drawdown': round(drawdown * 100, 4),
+        })
+        port_rets.append(r)
+
+    # 风险收益指标（无风险利率取 1.5%）
+    days = len(port_rets)
+    total_return = port_nav - 1
+    annual_yield = (1 + total_return) ** (252 / days) - 1 if days > 0 else None
+    annual_vol = statistics.stdev(port_rets) * math.sqrt(252) if days >= 2 else None
+    max_dd = min((p['drawdown'] for p in nav_series), default=0.0) / 100
+    metrics = {
+        'total_return': total_return,
+        'annual_yield': annual_yield,
+        'annual_volatility': annual_vol,
+        'max_drawdown': max_dd,
+        'sharpe_ratio': ((annual_yield - 0.015) / annual_vol) if annual_yield is not None and annual_vol else None,
+        'calmar_ratio': (annual_yield / abs(max_dd)) if annual_yield is not None and max_dd < 0 else None,
+        'daily_count': days,
+        'start_date': all_dates[0].isoformat() if all_dates else None,
+        'end_date': all_dates[-1].isoformat() if all_dates else None,
+    }
+
+    # 成分明细：名称/权重/自身以来累计收益/最新净值/规模
+    products = {p.pid: p for p in PerfProducts.objects.filter(pid__in=valid_pids)}
+    accts = {m.account_id: m for m in MomAccountRecord.objects.filter(
+        account_id__in=[p.product_name for p in products.values()])}
+    headers = {}
+    seen = set()
+    for h in PerfHeaderStats.objects.filter(pid__in=valid_pids, trade_date__isnull=False).order_by('-trade_date'):
+        if h.pid not in seen:
+            seen.add(h.pid)
+            headers[h.pid] = h
+
+    advisors = []
+    for pid, w in zip(valid_pids, weights):
+        product = products.get(pid)
+        acct = accts.get(product.product_name) if product else None
+        header = headers.get(pid)
+        advisors.append({
+            'pid': pid,
+            'account_code': acct.account_id if acct else (product.product_name if product else str(pid)),
+            'account_name': acct.account_name if acct else None,
+            'invest_logic': acct.invest_logic if acct else None,
+            'weight': round(w * 100, 2),
+            'latest_nav': round(next(reversed(list(nav_map[pid].values()))), 4) if nav_map[pid] else None,
+            'total_return': (round((header.since_inception_rise or 0) * 100, 4)
+                             if header and header.since_inception_rise is not None else None),
+            'cum_investment': float(acct.cum_investment) if acct and acct.cum_investment is not None else None,
+            'mk_bf': float(acct.mk_bf) if acct and acct.mk_bf is not None else None,
+            'new_add': float(acct.new_add) if acct and acct.new_add is not None else None,
+        })
+
+    # 组合规模合计
+    def _sum(field):
+        vals = [a[field] for a in advisors if a[field] is not None]
+        return round(sum(vals), 2) if vals else None
+
+    scale = {
+        'advisor_count': len(advisors),
+        'cum_investment': _sum('cum_investment'),
+        'mk_bf': _sum('mk_bf'),
+        'new_add': _sum('new_add'),
+    }
+
+    # 成分对比曲线（各投顾以自身首日净值归一的累计收益）
+    member_series = []
+    for pid in valid_pids:
+        series = sorted(nav_map[pid].items())
+        if not series:
+            continue
+        base = series[0][1]
+        member_series.append({
+            'pid': pid,
+            'points': [
+                {'date': d.isoformat(), 'cum_return': round((nv / base - 1) * 100, 4)}
+                for d, nv in series
+            ],
+        })
+
+    return Response({
+        'model': model,
+        'weight_note': weight_note,
+        'metrics': metrics,
+        'nav_series': nav_series,
+        'advisors': advisors,
+        'scale': scale,
+        'member_series': member_series,
+    })
+
+
+MODEL_LABELS = {
+    'equal': '等权',
+    'mv': '均值方差',
+    'rp': '风险平价',
+    'custom': '自定义',
+}
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([AllowAny])
+def portfolio_records(request):
+    """我的组合列表 / 新建保存组合。"""
+    from .models import StrategyPortfolioRecord
+
+    if request.method == 'GET':
+        qs = StrategyPortfolioRecord.objects.order_by('-updated_at')
+        return Response([{
+            'id': r.id,
+            'name': r.name,
+            'note': r.note,
+            'pids': r.pids,
+            'weights': r.weights,
+            'weight_model': r.weight_model,
+            'weight_model_label': MODEL_LABELS.get(r.weight_model, r.weight_model),
+            'created_at': r.created_at,
+            'updated_at': r.updated_at,
+        } for r in qs])
+
+    # POST：保存组合
+    payload = request.data or {}
+    name = str(payload.get('name') or '').strip()
+    pids = payload.get('pids')
+    if not name:
+        return Response({'detail': '组合名称不能为空'}, status=400)
+    if not isinstance(pids, list) or not pids or len(pids) > 20:
+        return Response({'detail': 'pids 须为非空列表（最多 20 个）'}, status=400)
+    try:
+        pids = [int(p) for p in pids]
+    except (TypeError, ValueError):
+        return Response({'detail': 'pids 元素须为整数'}, status=400)
+
+    model = str(payload.get('weight_model') or 'equal').strip().lower()
+    if model not in MODEL_LABELS:
+        return Response({'detail': 'weight_model 仅支持 equal / mv / rp / custom'}, status=400)
+
+    weights = payload.get('weights')
+    if weights:  # 非空才校验；空列表 = 按模型自动计算，不存自定义权重
+        if not isinstance(weights, list) or len(weights) != len(pids):
+            return Response({'detail': 'weights 须为与 pids 等长的列表'}, status=400)
+        try:
+            weights = [round(float(w), 4) for w in weights]
+        except (TypeError, ValueError):
+            return Response({'detail': 'weights 元素须为数值'}, status=400)
+    else:
+        weights = []
+
+    note = str(payload.get('note') or '').strip()[:255]
+
+    record_id = payload.get('id')
+    if record_id:
+        try:
+            record = StrategyPortfolioRecord.objects.get(pk=record_id)
+        except StrategyPortfolioRecord.DoesNotExist:
+            return Response({'detail': '组合不存在'}, status=404)
+        record.name, record.note = name, note
+        record.pids, record.weights, record.weight_model = pids, weights, model
+        record.save()
+    else:
+        record = StrategyPortfolioRecord.objects.create(
+            name=name[:100], note=note, pids=pids, weights=weights, weight_model=model)
+    return Response({
+        'id': record.id,
+        'name': record.name,
+        'note': record.note,
+        'pids': record.pids,
+        'weights': record.weights,
+        'weight_model': record.weight_model,
+        'weight_model_label': MODEL_LABELS.get(record.weight_model, record.weight_model),
+        'created_at': record.created_at,
+        'updated_at': record.updated_at,
+    }, status=201 if not record_id else 200)
+
+
+@api_view(['GET', 'DELETE'])
+@permission_classes([AllowAny])
+def portfolio_record_detail(request, pk):
+    """查询单个组合 / 删除指定组合。"""
+    from .models import StrategyPortfolioRecord
+
+    try:
+        record = StrategyPortfolioRecord.objects.get(pk=pk)
+    except StrategyPortfolioRecord.DoesNotExist:
+        return Response({'detail': '组合不存在'}, status=404)
+
+    if request.method == 'GET':
+        return Response({
+            'id': record.id,
+            'name': record.name,
+            'note': record.note,
+            'pids': record.pids,
+            'weights': record.weights,
+            'weight_model': record.weight_model,
+            'weight_model_label': MODEL_LABELS.get(record.weight_model, record.weight_model),
+            'created_at': record.created_at,
+            'updated_at': record.updated_at,
+        })
+
+    record.delete()
+    return Response({'detail': '已删除'})
 
 
 @api_view(['GET'])

@@ -19,9 +19,9 @@
             </button>
           </div>
           <div v-if="selectedWindow === 'custom'" class="sector-custom-range">
-            <input v-model="customStartDate" type="date" />
+            <input v-model="customStartDate" name="start_date" type="date" />
             <span>至</span>
-            <input v-model="customEndDate" type="date" />
+            <input v-model="customEndDate" name="end_date" type="date" />
             <button type="button" @click="applyCustomWindow">查询</button>
           </div>
           <span class="d-card-x">{{ latestDate ? `截止日期：${latestDate}` : '按交易日期汇总' }}</span>

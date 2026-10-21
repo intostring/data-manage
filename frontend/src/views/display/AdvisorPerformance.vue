@@ -18,17 +18,33 @@
           <div>
             <div style="display:flex;align-items:center;gap:10px">
               <span class="d-card-t" style="font-size:17px">{{ detail.info.account_name || detail.info.product_name }}</span>
+              <span v-if="detail.info.merged" class="d-pill info" :title="(detail.info.account_codes || []).join('、')">
+                合并 {{ detail.info.account_count }} 账号
+              </span>
               <span v-if="detail.info.is_stop === 0" class="d-pill ok">运行中</span>
               <span v-else class="d-pill gray">已停止</span>
+              <!-- 多账号投顾：跳转合并业绩入口 -->
+              <button
+                v-if="!detail.info.merged && detail.info.mergeable"
+                class="ap-merge-btn"
+                @click="goMerged"
+              >查看合并业绩 →</button>
               <span v-if="detail.info.data_update_date" class="d-muted d-mono" style="margin-left:auto;font-size:11px">
                 数据更新至{{ detail.info.data_update_date }}
               </span>
             </div>
             <div class="d-muted d-mono" style="font-size:11px;margin-top:4px">
-              {{ detail.info.account_code || detail.info.product_name }}
-              <span v-if="detail.info.product_name_cn" style="margin-left:10px">所属产品: {{ detail.info.product_name_cn }}</span>
-              <span v-if="detail.info.invest_logic" style="margin-left:10px">投资逻辑: {{ detail.info.invest_logic }}</span>
-              <span v-if="detail.info.invest_cate" style="margin-left:10px">投资范围: {{ detail.info.invest_cate }}</span>
+              <template v-if="detail.info.merged">
+                {{ (detail.info.account_codes || []).join('、') }}
+                <span v-if="detail.info.invest_logic" style="margin-left:10px">投资逻辑: {{ detail.info.invest_logic }}</span>
+                <span v-if="detail.info.invest_cate" style="margin-left:10px">投资范围: {{ detail.info.invest_cate }}</span>
+              </template>
+              <template v-else>
+                {{ detail.info.account_code || detail.info.product_name }}
+                <span v-if="detail.info.product_name_cn" style="margin-left:10px">所属产品: {{ detail.info.product_name_cn }}</span>
+                <span v-if="detail.info.invest_logic" style="margin-left:10px">投资逻辑: {{ detail.info.invest_logic }}</span>
+                <span v-if="detail.info.invest_cate" style="margin-left:10px">投资范围: {{ detail.info.invest_cate }}</span>
+              </template>
             </div>
           </div>
           <!-- KPI 通栏 -->
@@ -58,22 +74,47 @@
               <button v-for="p in periods" :key="p.key" :class="selectedPeriod === p.key ? 'on' : ''" @click="selectedPeriod = p.key; changePeriod()">{{ p.label }}</button>
             </div>
             <div v-if="selectedPeriod === 'custom'" style="display:flex;align-items:center;gap:6px">
-              <input type="date" v-model="customStart" class="d-ipt" style="font-size:11px;padding:4px 8px;width:130px" @change="changePeriod" />
+              <input type="date" name="start_date" v-model="customStart" class="d-ipt" style="font-size:11px;padding:4px 8px;width:130px" @change="changePeriod" />
               <span class="d-muted">至</span>
-              <input type="date" v-model="customEnd" class="d-ipt" style="font-size:11px;padding:4px 8px;width:130px" @change="changePeriod" />
+              <input type="date" name="end_date" v-model="customEnd" class="d-ipt" style="font-size:11px;padding:4px 8px;width:130px" @change="changePeriod" />
             </div>
           </div>
-          <!-- 图例 + 收益率 -->
-          <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px;padding:4px 0;margin-left:55px">
-            <span class="d-leg-i">
+          <!-- 图例 + 收益率（点击可切换曲线显隐） -->
+          <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px;padding:4px 0;margin-left:55px;flex-wrap:wrap">
+            <span class="d-leg-i ap-leg-toggle" :class="{ off: !legendOn(advisorLegendName) }" @click="toggleSeries(advisorLegendName)">
               <i class="d-leg-sw" style="background:#9C6B2F"></i>
               <span style="font-size:12px">{{ detail.info.account_name || detail.info.product_name }}</span>
               <span class="d-mono" :style="periodReturn >= 0 ? 'color:#B03A2E;font-size:12px;margin-left:4px' : 'color:#17714B;font-size:12px;margin-left:4px'">{{ periodReturn >= 0 ? '+' : '' }}{{ periodReturn.toFixed(2) }}%</span>
+            </span>
+            <span class="d-leg-i ap-leg-toggle" :class="{ off: !legendOn('南华商品指数') }" @click="toggleSeries('南华商品指数')">
+              <i class="d-leg-sw" style="background:#8A8A8A"></i>
+              <span style="font-size:12px">南华商品指数</span>
+              <span class="d-mono" :style="benchPeriodReturn >= 0 ? 'color:#B03A2E;font-size:12px;margin-left:4px' : 'color:#17714B;font-size:12px;margin-left:4px'">{{ benchPeriodReturn >= 0 ? '+' : '' }}{{ benchPeriodReturn.toFixed(2) }}%</span>
+            </span>
+            <span class="d-leg-i ap-leg-toggle" :class="{ off: !legendOn('超额收益') }" @click="toggleSeries('超额收益')">
+              <i class="d-leg-sw" style="background:#4472C4"></i>
+              <span style="font-size:12px">超额收益</span>
+              <span class="d-mono" :style="excessPeriodReturn >= 0 ? 'color:#B03A2E;font-size:12px;margin-left:4px' : 'color:#17714B;font-size:12px;margin-left:4px'">{{ excessPeriodReturn >= 0 ? '+' : '' }}{{ excessPeriodReturn.toFixed(2) }}%</span>
             </span>
           </div>
           <template v-if="(detail.nav_series || []).length">
             <div style="position:relative" @mousemove="updateDomTooltip" @mouseleave="hideChartTooltip">
               <div ref="navChartRef" style="width:100%;height:520px"></div>
+              <!-- 回撤区图例（点击可切换，置于「动态回撤」标题下方） -->
+              <div style="position:absolute; left:55px; right:170px; top:331px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; zIndex:5">
+                <span class="d-leg-i ap-leg-toggle ap-dd-leg" :class="{ off: !legendOn('回撤') }" @click="toggleSeries('回撤')">
+                  <i class="d-leg-sw" style="background:#B03A2E"></i>
+                  <span>{{ advisorLegendName }}</span>
+                </span>
+                <span class="d-leg-i ap-leg-toggle ap-dd-leg" :class="{ off: !legendOn('基准回撤') }" @click="toggleSeries('基准回撤')">
+                  <i class="d-leg-sw" style="background:#8A8A8A"></i>
+                  <span>基准回撤</span>
+                </span>
+                <span class="d-leg-i ap-leg-toggle ap-dd-leg" :class="{ off: !legendOn('超额回撤') }" @click="toggleSeries('超额回撤')">
+                  <i class="d-leg-sw" style="background:#4472C4"></i>
+                  <span>超额回撤</span>
+                </span>
+              </div>
               <div
                 v-if="zoomLabel.show"
                 :style="{ position:'absolute', left: zoomLabel.startX+'px', top:'263px', transform:'translateX(0)', zIndex:99, color:'#8F8A79', fontSize:'10px', fontFamily:'var(--mono)', pointerEvents:'none', whiteSpace:'nowrap' }"
@@ -95,13 +136,33 @@
                   <span style="color:#666">{{ chartAdvisorName }}</span>
                   <span style="font-weight:600;margin-left:12px">{{ tipData.ret >= 0 ? '+' : '' }}{{ tipData.ret.toFixed(2) }}%</span>
                 </div>
+                <div style="display:flex;align-items:center;gap:6px;margin-top:2px">
+                  <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#8A8A8A"></span>
+                  <span style="color:#666">南华商品指数</span>
+                  <span style="font-weight:600;margin-left:12px">{{ tipData.bench >= 0 ? '+' : '' }}{{ tipData.bench.toFixed(2) }}%</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;margin-top:2px">
+                  <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#4472C4"></span>
+                  <span style="color:#666">超额收益</span>
+                  <span style="font-weight:600;margin-left:12px;color:#4472C4">{{ tipData.excess >= 0 ? '+' : '' }}{{ tipData.excess.toFixed(2) }}%</span>
+                </div>
               </div>
-              <div v-if="tipData.show" :style="{ position:'absolute', left: tipData.x+'px', top:'350px', zIndex:99, background:'#FDFCF8', border:'1px solid #E5E0D2', borderRadius:'4px', padding:'6px 10px', fontSize:'11px', boxShadow:'0 2px 8px rgba(0,0,0,0.08)', pointerEvents:'none', whiteSpace:'nowrap' }">
+              <div v-if="tipData.show" :style="{ position:'absolute', left: tipData.x+'px', top:'362px', zIndex:99, background:'#FDFCF8', border:'1px solid #E5E0D2', borderRadius:'4px', padding:'6px 10px', fontSize:'11px', boxShadow:'0 2px 8px rgba(0,0,0,0.08)', pointerEvents:'none', whiteSpace:'nowrap' }">
                 <div style="color:#999;margin-bottom:2px">{{ tipData.date }}</div>
                 <div style="display:flex;align-items:center;gap:6px">
                   <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#B03A2E"></span>
                   <span style="color:#666">回撤</span>
                   <span style="font-weight:600;margin-left:12px;color:#B03A2E">{{ tipData.dd.toFixed(2) }}%</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;margin-top:2px">
+                  <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#8A8A8A"></span>
+                  <span style="color:#666">基准回撤</span>
+                  <span style="font-weight:600;margin-left:12px;color:#8A8A8A">{{ tipData.benchDd.toFixed(2) }}%</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;margin-top:2px">
+                  <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#4472C4"></span>
+                  <span style="color:#666">超额回撤</span>
+                  <span style="font-weight:600;margin-left:12px;color:#4472C4">{{ tipData.excessDd.toFixed(2) }}%</span>
                 </div>
               </div>
             </div>
@@ -203,9 +264,12 @@ import { GridComponent, TooltipComponent, LegendComponent, MarkLineComponent, Da
 import { CanvasRenderer } from 'echarts/renderers'
 import client from '../../api/client'
 import { useAdvisorStore } from '../../stores/advisor'
+import { useRoute, useRouter } from 'vue-router'
 
 echarts.use([CanvasRenderer, LineChart, GridComponent, TooltipComponent, LegendComponent, MarkLineComponent, DataZoomComponent, TitleComponent, GraphicComponent])
 
+const route = useRoute()
+const router = useRouter()
 const advisorStore = useAdvisorStore()
 const detail = ref(null)
 const loading = ref(false)
@@ -234,12 +298,28 @@ const navChartRef = ref(null)
 let navChart = null
 
 // 自定义 tooltip 数据
-const emptyTipData = () => ({ show: false, panel: '', x: 0, guideX: 0, date: '', ret: 0, dd: 0 })
+const emptyTipData = () => ({ show: false, panel: '', x: 0, guideX: 0, date: '', ret: 0, dd: 0, bench: 0, excess: 0, benchDd: 0, excessDd: 0 })
 const tipData = ref(emptyTipData())
 const zoomLabel = ref({ show: false, startDate: '', endDate: '', startX: 55, endX: 55 })
 let chartDates = []
 let chartCumReturns = []
 let chartDrawdowns = []
+const chartBenchReturns = ref([])
+const chartExcessReturns = ref([])
+const chartBenchDrawdowns = ref([])
+const chartExcessDrawdowns = ref([])
+
+// 图例显隐状态（点击 DOM 图例切换对应曲线）
+const legendSelected = ref({})
+const advisorLegendName = computed(() =>
+  detail.value?.info?.account_name || detail.value?.info?.product_name || '投顾'
+)
+function legendOn(name) {
+  return legendSelected.value[name] !== false
+}
+function toggleSeries(name) {
+  navChart?.dispatchAction({ type: 'legendToggleSelect', name })
+}
 const chartAdvisorName = ref('')
 const firstChartDate = computed(() => chartDates[0] || '')
 
@@ -294,6 +374,10 @@ function updateTooltipByIndex(idx) {
     date: chartDates[idx],
     ret: chartCumReturns[idx],
     dd: chartDrawdowns[idx],
+    bench: chartBenchReturns.value[idx] ?? 0,
+    excess: chartExcessReturns.value[idx] ?? 0,
+    benchDd: chartBenchDrawdowns.value[idx] ?? 0,
+    excessDd: chartExcessDrawdowns.value[idx] ?? 0,
   }
 }
 
@@ -361,6 +445,16 @@ const periodReturn = computed(() => {
   const series = recalcSeries(filterByPeriod(detail.value.nav_series))
   if (!series.length) return 0
   return series[series.length - 1].cum_return
+})
+
+// 当前时间段内基准收益率与超额收益率（与图表同口径：区间首日重算）
+const benchPeriodReturn = computed(() => {
+  const arr = chartBenchReturns.value
+  return arr.length ? arr[arr.length - 1] : 0
+})
+const excessPeriodReturn = computed(() => {
+  const arr = chartExcessReturns.value
+  return arr.length ? arr[arr.length - 1] : 0
 })
 
 // 区间收益：按月度 / 年度划分（基于完整净值序列，与时间段选择无关）
@@ -500,12 +594,25 @@ function fmtColorPct(v) {
   return v >= 0 ? 'd-up' : 'd-dn'
 }
 
-async function loadDetail(pid) {
+// 跳转到同名账号合并业绩页：push 后直接加载，不依赖路由 watch（双保险）
+function goMerged() {
+  const pid = Number(route.params.pid)
+  router.push(`/display/advisor/detail/${pid}?merged=1`).catch(() => {})
+  if (pid) loadDetail(pid, true)
+}
+
+// 合并模式状态：?merged=1 进入时加载同名多账号合并详情
+const mergedMode = ref(false)
+
+async function loadDetail(pid, merge = false) {
   loading.value = true
   detail.value = null
   try {
-    const { data } = await client.get('/tables/advisor/performance/', { params: { pid } })
+    const params = { pid }
+    if (merge) params.merge = 1
+    const { data } = await client.get('/tables/advisor/performance/', { params })
     detail.value = data
+    mergedMode.value = !!data?.info?.merged
     loading.value = false
     await nextTick()
     renderCharts()
@@ -515,9 +622,15 @@ async function loadDetail(pid) {
   }
 }
 
-// 监听 store 中 selectedPid 变化
+// 监听 store 中 selectedPid 变化（顶部搜索切换 → 退出合并模式）
 watch(() => advisorStore.selectedPid, (pid) => {
-  if (pid) loadDetail(pid)
+  if (pid) loadDetail(pid, false)
+})
+
+// 同路由仅 query 变化（单账号 ↔ 合并切换）时重新加载
+watch(() => [route.params.pid, route.query.merged], ([newPid, newMerged]) => {
+  if (!newPid) return
+  loadDetail(Number(newPid), newMerged === '1')
 })
 
 function renderCharts() {
@@ -535,28 +648,64 @@ function renderCharts() {
   const drawdowns = series.map((s) => s.drawdown)
   const advisorName = detail.value?.info?.account_name || detail.value?.info?.product_name || '投顾'
 
+  // 基准指数（NHCI.NH）累计收益：与组合同区间、以区间首日为基准重算
+  const fullBench = detail.value?.benchmark_series || []
+  const benchMap = new Map(fullBench.map((p) => [p.date, p.cum_return]))
+  const benchCumFull = [] // 区间内各日基准全期累计（缺失日沿用前值）
+  let lastBench = null
+  for (const s of series) {
+    const v = benchMap.get(s.date)
+    if (v != null) lastBench = v
+    benchCumFull.push(lastBench)
+  }
+  const baseBench = benchCumFull.length ? benchCumFull[0] : 0
+  const benchReturns = benchCumFull.map((v) =>
+    v == null || baseBench == null ? 0 : ((100 + v) / (100 + baseBench) - 1) * 100
+  )
+  const excessReturns = series.map((s, i) => s.cum_return - (benchReturns[i] ?? 0))
+
+  // 基准/超额的动态回撤：累计收益相对历史峰值的回落（百分点）
+  const drawdownOf = (values) => {
+    let peak = 0
+    return values.map((v) => {
+      peak = Math.max(peak, v)
+      return v - peak
+    })
+  }
+  const benchDrawdowns = drawdownOf(benchReturns)
+  const excessDrawdowns = drawdownOf(excessReturns)
+
   const maxDrawdown = drawdowns.length ? Math.min(...drawdowns) : 0
 
   // 存储数据供自定义 tooltip 使用
   chartDates = dates
   chartCumReturns = cumReturns
   chartDrawdowns = drawdowns
+  chartBenchReturns.value = benchReturns
+  chartExcessReturns.value = excessReturns
+  chartBenchDrawdowns.value = benchDrawdowns
+  chartExcessDrawdowns.value = excessDrawdowns
   chartAdvisorName.value = advisorName
   updateZoomLabel(0, 100)
 
   navChart.setOption({
     tooltip: { show: false },
+    legend: {
+      show: false,
+      data: [advisorName, '南华商品指数', '超额收益', '回撤', '基准回撤', '超额回撤'],
+      selected: { ...legendSelected.value },
+    },
     axisPointer: {
       link: [{ xAxisIndex: 'all' }],
       label: { show: true, formatter: (p) => p.value, backgroundColor: '#9C6B2F' },
     },
     title: [
       { text: '动态回撤', left: 55, top: 315, textStyle: { fontSize: 12, fontWeight: 'normal', color: '#333' } },
-      { text: `截止日期：${dates[dates.length - 1] || '—'}`, right: 25, top: 315, textStyle: { fontSize: 11, fontWeight: 'normal', color: '#8F8A79' } },
+      { text: `截止日期：${dates[dates.length - 1] || '—'}  ·  最大回撤 ${maxDrawdown.toFixed(2)}%`, right: 25, top: 315, textStyle: { fontSize: 11, fontWeight: 'normal', color: '#8F8A79' } },
     ],
     grid: [
       { left: 55, right: 25, top: 15, height: 250 },
-      { left: 55, right: 25, top: 350, height: 100 },
+      { left: 55, right: 25, top: 362, height: 92 },
     ],
     xAxis: [
       { type: 'category', gridIndex: 0, data: dates, axisLabel: { show: false }, axisLine: { lineStyle: { color: '#E5E0D2' } } },
@@ -571,14 +720,12 @@ function renderCharts() {
       { type: 'slider', xAxisIndex: [0, 1], top: 280, height: 18, start: 0, end: 100, borderColor: '#E5E0D2', fillerColor: 'rgba(156,107,47,0.08)', handleStyle: { color: '#9C6B2F' }, textStyle: { fontSize: 10 } },
     ],
     series: [
-      { name: advisorName, type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: cumReturns, lineStyle: { width: 1.5, color: '#9C6B2F' }, itemStyle: { color: '#9C6B2F' }, showSymbol: false },
+      { name: advisorName, type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: cumReturns, lineStyle: { width: 1.5, color: '#9C6B2F' }, itemStyle: { color: '#9C6B2F' }, showSymbol: false, z: 5 },
+      { name: '南华商品指数', type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: benchReturns, lineStyle: { width: 1.2, color: '#8A8A8A' }, itemStyle: { color: '#8A8A8A' }, showSymbol: false },
+      { name: '超额收益', type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: excessReturns, lineStyle: { width: 1.2, color: '#4472C4' }, itemStyle: { color: '#4472C4' }, showSymbol: false, areaStyle: { color: 'rgba(68,114,196,0.06)' } },
       { name: '回撤', type: 'line', xAxisIndex: 1, yAxisIndex: 1, data: drawdowns, lineStyle: { width: 1, color: '#B03A2E' }, itemStyle: { color: '#B03A2E' }, areaStyle: { color: 'rgba(176,58,46,0.10)' }, showSymbol: false },
-    ],
-    graphic: [
-      {
-        type: 'text', left: 120, top: 318,
-        style: { text: `${advisorName}    最大回撤: ${maxDrawdown.toFixed(2)}%`, font: '12px sans-serif', fill: '#999' },
-      },
+      { name: '基准回撤', type: 'line', xAxisIndex: 1, yAxisIndex: 1, data: benchDrawdowns, lineStyle: { width: 1, color: '#8A8A8A', type: 'dashed' }, itemStyle: { color: '#8A8A8A' }, showSymbol: false },
+      { name: '超额回撤', type: 'line', xAxisIndex: 1, yAxisIndex: 1, data: excessDrawdowns, lineStyle: { width: 1, color: '#4472C4', type: 'dashed' }, itemStyle: { color: '#4472C4' }, showSymbol: false },
     ],
   })
 
@@ -586,6 +733,12 @@ function renderCharts() {
   navChart.on('dataZoom', (event) => {
     const payload = event.batch?.[0] || event
     updateZoomLabel(payload.start ?? 0, payload.end ?? 100)
+  })
+
+  // 图例切换后同步 DOM 图例的置灰状态
+  navChart.off('legendselectchanged')
+  navChart.on('legendselectchanged', (event) => {
+    legendSelected.value = { ...event.selected }
   })
 
   // 鼠标离开时隐藏
@@ -606,7 +759,19 @@ onMounted(async () => {
   if (!advisorStore.advisors.length) {
     await advisorStore.fetchAdvisors()
   }
-  if (advisorStore.selectedPid) {
+  // 优先使用路由参数 pid（从列表页进入），并同步到全局搜索 store
+  const routePid = Number(route.params.pid)
+  const wantMerge = route.query.merged === '1'
+  if (routePid) {
+    if (wantMerge) {
+      // 合并模式：不同步 selectedPid，避免触发搜索切换覆盖
+      loadDetail(routePid, true)
+    } else if (advisorStore.selectedPid !== routePid) {
+      advisorStore.selectAdvisor(routePid)
+    } else {
+      loadDetail(routePid)
+    }
+  } else if (advisorStore.selectedPid) {
     loadDetail(advisorStore.selectedPid)
   }
   window.addEventListener('resize', handleResize)
@@ -618,6 +783,52 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* 多账号投顾「查看合并业绩」入口按钮 */
+.ap-merge-btn {
+  border: 1px solid #E4D5BC;
+  background: #F5EDE0;
+  color: #9C6B2F;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ap-merge-btn:hover {
+  background: #9C6B2F;
+  color: #FFFDF8;
+}
+
+/* 可点击图例：切换曲线显隐 */
+.ap-leg-toggle {
+  cursor: pointer;
+  user-select: none;
+  transition: opacity 0.15s ease;
+}
+
+.ap-leg-toggle:hover {
+  opacity: 0.75;
+}
+
+.ap-leg-toggle.off {
+  opacity: 0.35;
+}
+
+.ap-leg-toggle.off .d-leg-sw {
+  background: #C6C2B4 !important;
+}
+
+/* 回撤区图例：与「动态回撤/截止日期」标题同行，字号略小 */
+.ap-dd-leg span {
+  font-size: 11px;
+}
+
+.ap-dd-leg .d-leg-sw {
+  width: 8px;
+  height: 8px;
+}
+
 /* 档案与核心指标卡片吸顶：滚动查看下方图表/表格时保持可见 */
 .ap-sticky {
   position: sticky;
