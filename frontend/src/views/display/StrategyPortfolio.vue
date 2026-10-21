@@ -9,6 +9,10 @@
         <router-link class="d-btn d-btn-pri" to="/display/strategy/portfolio/create">+ 创建组合</router-link>
       </div>
       <div class="d-card-b">
+        <div v-if="!auth.isAuthenticated" class="sp-login-tip">
+          <span class="d-muted" style="font-size:12.5px">登录后可创建并管理自己的组合（当前仅显示公共组合）</span>
+          <router-link class="d-btn d-btn-pri" to="/login?redirect=/display/strategy/portfolio">去登录</router-link>
+        </div>
         <div v-if="loading" style="display:flex;align-items:center;justify-content:center;height:160px">
           <span class="d-muted">加载中…</span>
         </div>
@@ -26,16 +30,21 @@
           >
             <div class="sp-rec-head">
               <b class="sp-rec-name" :title="r.name">{{ r.name }}</b>
-              <span class="d-pill info" style="font-size:10px;flex-shrink:0">{{ r.weight_model_label }}</span>
+              <span style="display:flex;gap:4px;flex-shrink:0">
+                <span v-if="!r.owner_id" class="d-pill gray" style="font-size:10px">公共</span>
+                <span class="d-pill info" style="font-size:10px">{{ r.weight_model_label }}</span>
+              </span>
             </div>
             <div v-if="r.note" class="d-muted sp-rec-note" :title="r.note">{{ r.note }}</div>
             <div class="d-muted" style="font-size:11px;margin-top:6px">
-              {{ r.pids.length }} 个成分 · 更新于 {{ fmtTime(r.updated_at) }}
+              {{ r.pids.length }} 个成分 · {{ r.owner_name ? '创建者 ' + r.owner_name : '公共组合' }} · 更新于 {{ fmtTime(r.updated_at) }}
             </div>
             <div class="sp-rec-foot">
               <span class="sp-rec-link" @click.stop="goDetail(r)">查看分析</span>
-              <span class="sp-rec-link" @click.stop="goEdit(r)">编辑</span>
-              <span class="sp-rec-link danger" @click.stop="deleteRecord(r)">删除</span>
+              <template v-if="r.is_mine || auth.isSuperuser">
+                <span class="sp-rec-link" @click.stop="goEdit(r)">编辑</span>
+                <span class="sp-rec-link danger" @click.stop="deleteRecord(r)">删除</span>
+              </template>
             </div>
           </div>
         </div>
@@ -45,13 +54,17 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
 
 const router = useRouter()
+const auth = useAuthStore()
 const records = ref([])
 const loading = ref(false)
+
+const mineCount = computed(() => records.value.filter((r) => r.is_mine).length)
 
 async function fetchRecords() {
   loading.value = true
@@ -87,10 +100,25 @@ function fmtTime(t) {
   return String(t).replace('T', ' ').slice(0, 16)
 }
 
-onMounted(fetchRecords)
+onMounted(() => {
+  if (auth.isAuthenticated && !auth.user) auth.fetchMe().catch(() => {})
+  fetchRecords()
+})
 </script>
 
 <style scoped>
+.sp-login-tip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  border: 1px dashed #C9A268;
+  border-radius: 6px;
+  background: #F5EDE0;
+}
+
 .sp-empty {
   display: flex;
   flex-direction: column;

@@ -35,7 +35,16 @@
             </div>
             <div class="d-muted d-mono" style="font-size:11px;margin-top:4px">
               <template v-if="detail.info.merged">
-                {{ (detail.info.account_codes || []).join('、') }}
+                <template v-for="(code, idx) in (detail.info.account_codes || [])" :key="code">
+                  <a
+                    v-if="detail.info.account_pids?.[code]"
+                    class="ap-acct-link"
+                    :title="`查看 ${code} 单账号业绩`"
+                    @click="goSingle(detail.info.account_pids[code])"
+                  >{{ code }}</a>
+                  <template v-else>{{ code }}</template>
+                  <span v-if="idx < (detail.info.account_codes || []).length - 1">、</span>
+                </template>
                 <span v-if="detail.info.invest_logic" style="margin-left:10px">投资逻辑: {{ detail.info.invest_logic }}</span>
                 <span v-if="detail.info.invest_cate" style="margin-left:10px">投资范围: {{ detail.info.invest_cate }}</span>
               </template>
@@ -176,8 +185,14 @@
       <!-- ③ 区间收益（月度 / 年度） -->
       <div class="d-card" style="margin-top:14px">
         <div class="d-card-h">
-          <span class="d-card-t">区间收益</span>
-          <span class="d-card-x">按月度与年度划分的区间收益率</span>
+          <div>
+            <span class="d-card-t">区间收益</span>
+            <span class="d-card-x" style="margin-left:10px">按月度与年度划分的区间收益率</span>
+          </div>
+          <div v-if="hasBenchRows" style="display:flex;gap:6px">
+            <button class="pr-toggle" :class="{ on: showBench }" @click="showBench = !showBench">基准指数</button>
+            <button class="pr-toggle" :class="{ on: showExcess }" @click="showExcess = !showExcess">超额收益</button>
+          </div>
         </div>
         <div class="d-card-b">
           <template v-if="periodReturnRows.length">
@@ -191,15 +206,41 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="row in periodReturnRows" :key="row.year">
-                    <td class="pr-year">{{ row.year }}</td>
-                    <td v-for="m in 12" :key="m" class="d-mono pr-c" :style="cellStyle(row.months[m - 1])">
-                      {{ fmtCell(row.months[m - 1]) }}
-                    </td>
-                    <td class="d-mono pr-year-cell" :style="cellStyle(row.yearReturn)">
-                      {{ fmtCell(row.yearReturn) }}
-                    </td>
-                  </tr>
+                  <template v-for="row in periodReturnRows" :key="row.year">
+                    <tr>
+                      <td class="pr-year">{{ row.year }}</td>
+                      <td v-for="m in 12" :key="m" class="d-mono pr-c" :style="cellStyle(row.months[m - 1])">
+                        {{ fmtCell(row.months[m - 1]) }}
+                      </td>
+                      <td class="d-mono pr-year-cell" :style="cellStyle(row.yearReturn)">
+                        {{ fmtCell(row.yearReturn) }}
+                      </td>
+                    </tr>
+                    <tr v-if="showBench && benchByYear[row.year]">
+                      <td class="pr-sub">基准指数</td>
+                      <td
+                        v-for="m in 12"
+                        :key="m"
+                        class="d-mono pr-c pr-c-sub"
+                        :style="cellStyle(benchByYear[row.year].months[m - 1])"
+                      >{{ fmtCell(benchByYear[row.year].months[m - 1]) }}</td>
+                      <td class="d-mono pr-year-cell pr-c-sub" :style="cellStyle(benchByYear[row.year].yearReturn)">
+                        {{ fmtCell(benchByYear[row.year].yearReturn) }}
+                      </td>
+                    </tr>
+                    <tr v-if="showExcess && excessByYear[row.year]">
+                      <td class="pr-sub">超额收益</td>
+                      <td
+                        v-for="m in 12"
+                        :key="m"
+                        class="d-mono pr-c pr-c-sub"
+                        :style="cellStyle(excessByYear[row.year].months[m - 1])"
+                      >{{ fmtCell(excessByYear[row.year].months[m - 1]) }}</td>
+                      <td class="d-mono pr-year-cell pr-c-sub" :style="cellStyle(excessByYear[row.year].yearReturn)">
+                        {{ fmtCell(excessByYear[row.year].yearReturn) }}
+                      </td>
+                    </tr>
+                  </template>
                 </tbody>
               </table>
             </div>
@@ -457,19 +498,8 @@ const excessPeriodReturn = computed(() => {
   return arr.length ? arr[arr.length - 1] : 0
 })
 
-// 区间收益：按月度 / 年度划分（基于完整净值序列，与时间段选择无关）
-const periodReturnRows = computed(() => {
-  const series = (detail.value?.nav_series || []).filter((s) => s.nav && s.date)
-  if (series.length < 2) return []
-  const rets = []
-  for (let i = 1; i < series.length; i++) {
-    rets.push({
-      date: series[i].date,
-      ret: series[i].nav / series[i - 1].nav - 1,
-    })
-  }
-  // 起始月的上月末基准
-  const first = series[0]
+// 日收益序列 → {年份: {months, yearReturn}}（月收益 = 月末净值环比连乘，单位 %）
+function prMonthlyByYear(rets) {
   const yearMap = new Map()
   const push = (year) => {
     let row = yearMap.get(year)
@@ -479,7 +509,6 @@ const periodReturnRows = computed(() => {
     }
     return row
   }
-  let prevYear = Number(first.date.slice(0, 4))
   for (const item of rets) {
     const y = Number(item.date.slice(0, 4))
     const m = Number(item.date.slice(5, 7))
@@ -487,15 +516,73 @@ const periodReturnRows = computed(() => {
     // 日收益按其所属日期归入当月/当年（跨年首段归新年度，符合 月收益=月末净值环比 口径）
     row.months[m - 1] = (1 + (row.months[m - 1] ?? 0)) * (1 + item.ret) - 1
     row.yearReturn = (1 + row.yearReturn) * (1 + item.ret) - 1
-    prevYear = y
   }
-  const rows = [...yearMap.values()].sort((a, b) => a.year - b.year)
-  for (const row of rows) {
-    row.months = row.months.map((v) => (v == null ? null : Math.round(v * 10000) / 100))
-    row.yearReturn = Math.round(row.yearReturn * 10000) / 100
+  const out = {}
+  for (const row of yearMap.values()) {
+    out[row.year] = {
+      months: row.months.map((v) => (v == null ? null : Math.round(v * 10000) / 100)),
+      yearReturn: Math.round(row.yearReturn * 10000) / 100,
+    }
   }
-  return rows
+  return out
+}
+
+// 区间收益：按月度 / 年度划分（基于完整净值序列，与时间段选择无关）
+const periodReturnRows = computed(() => {
+  const series = (detail.value?.nav_series || []).filter((s) => s.nav && s.date)
+  if (series.length < 2) return []
+  const rets = []
+  for (let i = 1; i < series.length; i++) {
+    rets.push({ date: series[i].date, ret: series[i].nav / series[i - 1].nav - 1 })
+  }
+  const byYear = prMonthlyByYear(rets)
+  return Object.keys(byYear)
+    .map(Number)
+    .sort((a, b) => a - b)
+    .map((y) => ({ year: y, ...byYear[y] }))
 })
+
+// 基准指数（NHCI）月度/年度区间收益：日收益由累计收益推算（缺失日沿用前值）
+const benchByYear = computed(() => {
+  const navSeries = (detail.value?.nav_series || []).filter((s) => s.nav && s.date)
+  const benchRaw = new Map((detail.value?.benchmark_series || []).map((p) => [p.date, p.cum_return]))
+  if (navSeries.length < 2 || !benchRaw.size) return {}
+  let lastCum = null
+  const cums = []
+  for (const s of navSeries) {
+    const v = benchRaw.get(s.date)
+    if (v != null) lastCum = v
+    cums.push({ date: s.date, cum: lastCum })
+  }
+  const rets = []
+  for (let i = 1; i < cums.length; i++) {
+    const a = cums[i - 1].cum
+    const b = cums[i].cum
+    if (a == null || b == null) continue
+    rets.push({ date: cums[i].date, ret: (100 + b) / (100 + a) - 1 })
+  }
+  return prMonthlyByYear(rets)
+})
+
+// 超额区间收益 = 投顾区间收益 − 基准区间收益（百分点）
+const excessByYear = computed(() => {
+  const out = {}
+  for (const row of periodReturnRows.value) {
+    const b = benchByYear.value[row.year]
+    if (!b) continue
+    out[row.year] = {
+      months: row.months.map((v, i) =>
+        v == null || b.months[i] == null ? null : Math.round((v - b.months[i]) * 100) / 100
+      ),
+      yearReturn: Math.round((row.yearReturn - b.yearReturn) * 100) / 100,
+    }
+  }
+  return out
+})
+
+const hasBenchRows = computed(() => Object.keys(benchByYear.value).length > 0)
+const showBench = ref(false)
+const showExcess = ref(false)
 
 // 图例分档（正收益暖色 / 负收益绿色，与站点涨跌配色一致）
 const legendBuckets = [
@@ -599,6 +686,12 @@ function goMerged() {
   const pid = Number(route.params.pid)
   router.push(`/display/advisor/detail/${pid}?merged=1`).catch(() => {})
   if (pid) loadDetail(pid, true)
+}
+
+// 合并模式下点击账号代码 → 进入对应单账号业绩页
+function goSingle(pid) {
+  router.push(`/display/advisor/detail/${pid}`).catch(() => {})
+  loadDetail(pid, false)
 }
 
 // 合并模式状态：?merged=1 进入时加载同名多账号合并详情
@@ -784,6 +877,16 @@ onUnmounted(() => {
 
 <style scoped>
 /* 多账号投顾「查看合并业绩」入口按钮 */
+/* 合并模式下账号代码：点击进入单账号业绩页 */
+.ap-acct-link {
+  color: #9C6B2F;
+  cursor: pointer;
+  text-decoration: underline dotted rgba(156, 107, 47, 0.6);
+  text-underline-offset: 3px;
+}
+.ap-acct-link:hover {
+  color: #B03A2E;
+}
 .ap-merge-btn {
   border: 1px solid #E4D5BC;
   background: #F5EDE0;
@@ -863,6 +966,41 @@ onUnmounted(() => {
 .pr-table th:last-child,
 .pr-table td:last-child {
   width: 90px;
+}
+
+.pr-toggle {
+  font-size: 12px;
+  padding: 3px 12px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.pr-toggle:hover {
+  border-color: #9C6B2F;
+  color: #9C6B2F;
+}
+
+.pr-toggle.on {
+  background: #9C6B2F;
+  border-color: #9C6B2F;
+  color: #FDFCF8;
+}
+
+.pr-sub {
+  font-size: 11px;
+  font-weight: normal;
+  color: var(--muted);
+  background: var(--soft);
+  white-space: nowrap;
+}
+
+.pr-c-sub {
+  font-size: 11px;
+  opacity: 0.88;
 }
 
 .pr-year {

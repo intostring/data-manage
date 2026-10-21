@@ -8,6 +8,7 @@ export const useAuthStore = defineStore('auth', {
   }),
   getters: {
     isAuthenticated: (state) => !!state.token,
+    isSuperuser: (state) => !!(state.user && state.user.is_superuser),
   },
   actions: {
     async login(username, password) {

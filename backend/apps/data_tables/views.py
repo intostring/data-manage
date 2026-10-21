@@ -532,36 +532,38 @@ def advisor_performance_list(request):
         else:
             groups[f"__single__{row['pid']}"].append(row)
 
-    # ---- 拉取各组账号的 rh_funds 日序列，份额法现算指标与仓位 ----
+    # ---- 拉取各组账号序列，份额法现算指标与仓位 ----
+    # 净值：统一走 _group_equity_daily（rh_funds 为主，缺失账号用净值表×投资规模合成，
+    # 中断账号在次一交易日全额出金）；保证金仅 rh_funds 覆盖账户有值
     all_accounts = {r['account_code'] for r in rows}
-    funds_by_account = defaultdict(list)  # account -> [(date, settle_balance, margin, flow)]
+    margin_by_account = {}  # account -> {date: margin}（仅 rh_funds 覆盖账户）
     if all_accounts:
         with connection.cursor() as cursor:
             cursor.execute("""
-                SELECT trade_date, account, settle_balance, margin,
-                       COALESCE(deposit_amount, 0) - COALESCE(withdraw_amount, 0) AS flow
+                SELECT trade_date, account, margin
                 FROM rh_funds
                 WHERE account IN %s AND trade_date IS NOT NULL
-                ORDER BY trade_date
             """, [tuple(all_accounts)])
-            for d, acc, balance, margin, flow in cursor.fetchall():
-                funds_by_account[acc].append((d, float(balance or 0), float(margin or 0), float(flow or 0)))
+            for d, acc, margin in cursor.fetchall():
+                margin_by_account.setdefault(acc, {})[d] = float(margin or 0)
 
     result = []
     for key, g in groups.items():
         is_merged = merge and len(g) > 1
-        # 组内各账号按日聚合
-        daily = defaultdict(lambda: [0.0, 0.0, 0.0])  # date -> [equity, margin, flow]
-        for row in g:
-            for d, balance, margin, flow in funds_by_account.get(row['account_code'], []):
-                v = daily[d]
-                v[0] += balance
-                v[1] += margin
-                v[2] += flow
-        series = [(d, v[0], v[2]) for d, v in sorted(daily.items())]
+        accounts = [row['account_code'] for row in g]
+        daily, _covered = _group_equity_daily(accounts)
+        series = [(d, v[0], v[1]) for d, v in sorted(daily.items())]
         metrics = _merged_nav_metrics(series) or {}
-        # 平均仓位：成立以来 Σmargin/Σequity 日均
-        ratios = [v[1] / v[0] * 100 for v in daily.values() if v[0] > 0]
+        # 平均仓位：组内成立以来 Σmargin/Σequity 日均
+        group_margin = defaultdict(float)
+        for acc in accounts:
+            for d, m in margin_by_account.get(acc, {}).items():
+                group_margin[d] += m
+        ratios = [
+            group_margin[d] / eq * 100
+            for d, (eq, _fl) in daily.items()
+            if eq > 0
+        ]
         avg_position = round(sum(ratios) / len(ratios), 2) if ratios else None
 
         def _pick(field):
@@ -623,6 +625,124 @@ def _benchmark_series_for_dates(dates):
             nav_b *= (1 + bench.get(d, 0.0))
         out.append({'date': d.isoformat(), 'cum_return': round((nav_b - 1) * 100, 4)})
     return out
+
+
+def _account_series(accounts, equity_col='settle_balance'):
+    """账号级日序列 {account: {date: [equity, flow]}} + rh_funds 覆盖账户集合。
+
+    rh_funds 覆盖的账户：所选口径权益（默认结算权益）+ 出入金；
+    rh_funds 无数据的账户（已清盘/数据未入库）：以 净值表净值 × 总投资规模
+    合成权益曲线，首个净值日计一笔全额入金。
+    """
+    from .models import MomAccountRecord, PerfNetValues, PerfProducts
+
+    series = {}  # account -> {date: [equity, flow]}
+    rh_covered = set()
+    if accounts:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT trade_date, account,
+                       COALESCE({equity_col}, 0),
+                       COALESCE(deposit_amount, 0) - COALESCE(withdraw_amount, 0)
+                FROM rh_funds
+                WHERE account IN %s AND trade_date IS NOT NULL
+                """,
+                [tuple(accounts)],
+            )
+            for d, acc, eq_val, flow in cursor.fetchall():
+                rh_covered.add(acc)
+                v = series.setdefault(acc, {}).setdefault(d, [0.0, 0.0])
+                v[0] += float(eq_val)
+                v[1] += float(flow)
+
+    # 缺 rh_funds 的账户：净值表 × 投资规模 合成
+    missing = [a for a in accounts if a not in rh_covered]
+    if missing:
+        pid_map = {p.product_name: p.pid for p in PerfProducts.objects.filter(product_name__in=missing)}
+        acct_map = {m.account_id: m for m in MomAccountRecord.objects.filter(account_id__in=missing)}
+        for code in missing:
+            pid = pid_map.get(code)
+            m = acct_map.get(code)
+            scale = None
+            if m is not None:
+                if m.cum_investment:
+                    scale = float(m.cum_investment)
+                elif m.mk_bf:
+                    scale = float(m.mk_bf)
+            if pid is None or not scale or scale <= 0:
+                continue
+            nav_qs = (
+                PerfNetValues.objects
+                .filter(pid=pid, trade_date__isnull=False, net_value__isnull=False)
+                .order_by('trade_date')
+                .values_list('trade_date', 'net_value')
+            )
+            s = series.setdefault(code, {})
+            first_day = True
+            for d, nv in nav_qs:
+                if not nv or nv <= 0:
+                    continue
+                s[d] = [float(nv) * scale, scale if first_day else 0.0]
+                first_day = False
+    return series, rh_covered
+
+
+def _account_pnl(s):
+    """单账号累计盈亏 = 数据末日权益 − 累计净入金（首日入金形成期初权益，口径自洽）。"""
+    if not s:
+        return None
+    end_eq = s[max(s)][0]
+    total_flow = sum(fl for _, (eq, fl) in s.items())
+    return round(end_eq - total_flow, 2)
+
+
+def _group_equity_daily(accounts, equity_col='settle_balance'):
+    """同名账号组每日聚合权益与现金流 {date: [equity, flow]}。
+
+    账号级序列见 _account_series；账户数据早于组合末日结束（清盘/赎回/停更）时，
+    在其次一交易日计全额出金，避免权益凭空消失被份额法误判为亏损。
+    返回 (daily, rh_covered账户集合)。
+    """
+    series, rh_covered = _account_series(accounts, equity_col)
+
+    # 聚合 + 中断账户全额出金
+    all_dates = sorted({d for s in series.values() for d in s})
+    date_idx = {d: i for i, d in enumerate(all_dates)}
+    daily = {}
+    for s in series.values():
+        if not s:
+            continue
+        for d, (eq, fl) in s.items():
+            v = daily.setdefault(d, [0.0, 0.0])
+            v[0] += eq
+            v[1] += fl
+        d_end = max(s)
+        end_eq = s[d_end][0]
+        idx = date_idx.get(d_end)
+        if end_eq > 0 and idx is not None and idx + 1 < len(all_dates):
+            daily.setdefault(all_dates[idx + 1], [0.0, 0.0])[1] -= end_eq
+    return daily, rh_covered
+
+
+def _share_method_nav(daily):
+    """份额法由 {date: [equity, flow]} 还原净值序列 [(date, nav)]，首日净值 1.0。"""
+    navs = []
+    share = None
+    prev_nav = 1.0
+    for d in sorted(daily):
+        equity, flow = daily[d]
+        if share is None:
+            if equity <= 0:
+                continue
+            share = equity
+            navs.append((d, 1.0))
+            continue
+        share += flow / prev_nav
+        nav = equity / share if share > 0 else prev_nav
+        navs.append((d, nav))
+        prev_nav = nav
+    return navs
 
 
 def _nav_window_metrics(navs, bench_rets=None):
@@ -696,11 +816,14 @@ def advisor_performance(request):
     """投顾业绩聚合接口。
 
     无参数：返回投顾产品列表 [{pid, product_name}]
+    ?merge=1：列表按投顾名合并同名多账户，一组一条
+    [{pid(组内代表), account_name, account_code, account_count, pids(组内全部)}]
     ?pid=xxx：返回单个投顾的基本信息 + 风险收益指标
-    ?pid=xxx&merge=1：同名多账号合并详情——净值由 rh_funds 市值+出入金份额法现算，
-    指标（since/1y/2y/3y）由该净值序列切窗推导
+    ?pid=xxx&merge=1：同名多账号合并详情
+    净值统一由 rh_funds 每日结算权益+出入金份额法现算（缺数据账号用净值表×投资规模合成），
+    指标（since/1y/2y/3y）由该净值序列切窗推导，单账号与合并模式同口径
     """
-    from .models import PerfHeaderStats, PerfProducts, PerfRiskIndicators, PerfNetValues, MomAccountRecord
+    from .models import PerfProducts, MomAccountRecord
 
     pid = request.query_params.get('pid')
     search = request.query_params.get('search', '').strip()
@@ -730,6 +853,29 @@ def advisor_performance(request):
                 'account_name': account_name,
                 'account_code': account_code,
             })
+        # merge=1：同名多账户合并为一组，代表 pid 取组内最小
+        if request.query_params.get('merge') == '1':
+            groups = {}
+            order = []
+            for row in result:
+                key = row['account_name'] or row['account_code']
+                if key not in groups:
+                    groups[key] = {
+                        'pid': row['pid'],
+                        'product_name': row['product_name'],
+                        'account_name': row['account_name'],
+                        'account_codes': [],
+                        'account_count': 0,
+                        'pids': [],
+                    }
+                    order.append(key)
+                g = groups[key]
+                g['account_codes'].append(row['account_code'])
+                g['account_count'] += 1
+                g['pids'].append(row['pid'])
+            for g in groups.values():
+                g['account_code'] = '、'.join(g['account_codes'])
+            return Response(list(groups[k] for k in order))
         return Response(result)
 
     # 单个投顾详情
@@ -742,225 +888,116 @@ def advisor_performance(request):
     if not product:
         return Response({'detail': f'未找到 pid={pid} 的产品'}, status=404)
 
-    # ---- 合并模式：同名多账号合并详情 ----
-    if request.query_params.get('merge') == '1':
-        from collections import defaultdict
-        from datetime import timedelta
+    # ---- 投顾详情：净值统一由 rh_funds 份额法现算（缺数据账号用净值表×投资规模合成） ----
+    # 单账号与同名合并模式共用同一口径：每日结算权益 + 出入金份额法（费前毛收益）
+    from datetime import timedelta
 
-        base_acct = MomAccountRecord.objects.filter(account_id=product.product_name).first()
-        group_products = [product]
-        if base_acct and base_acct.account_name:
-            same_name = MomAccountRecord.objects.filter(account_name=base_acct.account_name)
-            codes = [m.account_id for m in same_name]
-            group_products = list(PerfProducts.objects.filter(product_name__in=codes))
-            if product not in group_products:
-                group_products.insert(0, product)
-        accounts = [p.product_name for p in group_products]
+    is_merge = request.query_params.get('merge') == '1'
+    base_acct = MomAccountRecord.objects.filter(account_id=product.product_name).first()
+    group_products = [product]
+    if is_merge and base_acct and base_acct.account_name:
+        same_name = MomAccountRecord.objects.filter(account_name=base_acct.account_name)
+        codes = [m.account_id for m in same_name]
+        group_products = list(PerfProducts.objects.filter(product_name__in=codes))
+        if product not in group_products:
+            group_products.insert(0, product)
+    accounts = [p.product_name for p in group_products]
 
-        # 合并净值：rh_funds 份额法
-        daily = defaultdict(lambda: [0.0, 0.0, 0.0])  # date -> [equity, margin, flow]
-        if accounts:
-            with connection.cursor() as cursor:
-                cursor.execute("""
-                    SELECT trade_date, account, settle_balance, margin,
-                           COALESCE(deposit_amount, 0) - COALESCE(withdraw_amount, 0) AS flow
-                    FROM rh_funds
-                    WHERE account IN %s AND trade_date IS NOT NULL
-                    ORDER BY trade_date
-                """, [tuple(accounts)])
-                for d, acc, balance, margin, flow in cursor.fetchall():
-                    v = daily[d]
-                    v[0] += float(balance or 0)
-                    v[1] += float(margin or 0)
-                    v[2] += float(flow or 0)
+    # 净值：rh_funds 份额法（缺数据账号由净值表×投资规模合成）
+    eq_daily, _covered = _group_equity_daily(accounts)
+    navs = _share_method_nav(eq_daily)
 
-        navs = []  # [(date, nav)]
-        share = None
-        prev_nav = 1.0
-        for d, (equity, _margin, flow) in sorted(daily.items()):
-            if share is None:
-                if equity <= 0:
-                    continue
-                share = equity
-                navs.append((d, 1.0))
-                continue
-            share += flow / prev_nav
-            nav = equity / share if share > 0 else prev_nav
-            navs.append((d, nav))
-            prev_nav = nav
-
-        nav_series = []
-        peak = None
-        base = navs[0][1] if navs else None
-        for d, nav in navs:
-            if peak is None or nav > peak:
-                peak = nav
-            nav_series.append({
-                'date': d.isoformat(),
-                'nav': round(nav, 6),
-                'cum_return': round((nav / base - 1) * 100, 4) if base else 0.0,
-                'drawdown': round((nav / peak - 1) * 100, 4) if peak else 0.0,
-            })
-
-        # 指标：since 全区间 + 1y/2y/3y 切窗（基准：南华商品指数 NHCI.NH）
-        risk_periods = ['1y', '2y', '3y', 'since']
-        risk_metrics = [
-            'annual_yield', 'annual_volatility', 'max_drawdown',
-            'sharpe_ratio', 'kama_ratio', 'info_ratio', 'alpha', 'beta',
-        ]
-        risk_table = None
-        indicators = {}
-        if len(navs) >= 2:
-            bench_rets = _load_nhci_returns()
-            last_date = navs[-1][0]
-            windows = {'since': navs}
-            for label, days_back in (('1y', 365), ('2y', 730), ('3y', 1095)):
-                cutoff = last_date - timedelta(days=days_back)
-                windows[label] = [x for x in navs if x[0] >= cutoff] or navs[-1:]
-            window_metrics = {label: _nav_window_metrics(seq, bench_rets) for label, seq in windows.items()}
-            risk_table = {
-                metric: {p: window_metrics[p][metric] for p in risk_periods}
-                for metric in risk_metrics
-            }
-            since_m = window_metrics['since']
-            indicators = {
-                'total_return': navs[-1][1] / navs[0][1] - 1,
-                **{k: since_m[k] for k in risk_metrics},
-            }
-
-        # 合并 info
-        accts = {m.account_id: m for m in MomAccountRecord.objects.filter(account_id__in=accounts)}
-        def _pick(field):
-            for code in accounts:
-                a = accts.get(code)
-                if a and getattr(a, field):
-                    return getattr(a, field)
-            return None
-        active_codes = [c for c in accounts if accts.get(c) and accts[c].is_stop != 1]
-        invest_codes = active_codes if active_codes else accounts
-        info = {
-            'pid': product.pid,
-            'product_name': _pick('account_name') or product.product_name,
-            'group_name': None,
-            'product_type': product.product_type,
-            'last_edit_ts': product.last_edit_ts,
-            'data_update_date': navs[-1][0].isoformat() if navs else None,
-            'account_name': _pick('account_name'),
-            'account_code': '、'.join(accounts),
-            'account_codes': accounts,
-            'account_count': len(accounts),
-            'merged': True,
-            'is_stop': 1 if accounts and all(
-                accts.get(c) and accts[c].is_stop == 1 for c in accounts) else 0,
-            'invest_logic': _pick('invest_logic'),
-            'invest_cate': _pick('invest_cate'),
-            'cum_investment': sum(
-                float(accts[c].cum_investment or 0) for c in invest_codes
-                if accts.get(c)) or None,
-        }
-
-        return Response({
-            'info': info,
-            'indicators': indicators,
-            'risk_table': risk_table,
-            'nav_series': nav_series,
-            'benchmark_series': _benchmark_series_for_dates([d for d, _ in navs]) if navs else [],
+    nav_series = []
+    peak = None
+    base = navs[0][1] if navs else None
+    for d, nav in navs:
+        if peak is None or nav > peak:
+            peak = nav
+        nav_series.append({
+            'date': d.isoformat(),
+            'nav': round(nav, 6),
+            'cum_return': round((nav / base - 1) * 100, 4) if base else 0.0,
+            'drawdown': round((nav / peak - 1) * 100, 4) if peak else 0.0,
         })
 
-    risk = PerfRiskIndicators.objects.filter(pid=pid_int).first()
-    header = PerfHeaderStats.objects.filter(pid=pid_int, trade_date__isnull=False).order_by('-trade_date').first()
-
-    # 从 MomAccountRecord 取投顾概览（account_id = product_name）
-    acct = MomAccountRecord.objects.filter(account_id=product.product_name).first()
-
-    # 基本信息
-    rj = product.raw_json or {}
-    # 该投顾是否属于同名多账号组（用于前端提供「查看合并业绩」入口）
-    mergeable = False
-    if acct and acct.account_name:
-        mergeable = MomAccountRecord.objects.filter(
-            account_name=acct.account_name
-        ).count() > 1
-    info = {
-        'pid': product.pid,
-        'product_name': product.product_name,
-        'group_name': rj.get('groupName'),
-        'product_type': product.product_type,
-        'last_edit_ts': product.last_edit_ts,
-        'data_update_date': header.trade_date.isoformat() if header and header.trade_date else None,
-        # 投顾概览（来自 mom_account_record）
-        'account_name': acct.account_name if acct else None,
-        'account_code': acct.account_id if acct else None,
-        'is_stop': acct.is_stop if acct else None,
-        'invest_logic': acct.invest_logic if acct else None,
-        'invest_cate': acct.invest_cate if acct else None,
-        'product_name_cn': acct.product_name if acct else None,
-        'mergeable': mergeable,
-    }
-
-    # 风险收益指标：投顾业绩顶部基本数据取成立以来口径
-    indicators = {}
+    # 指标：since 全区间 + 1y/2y/3y 切窗（基准：南华商品指数 NHCI.NH）
     risk_periods = ['1y', '2y', '3y', 'since']
     risk_metrics = [
         'annual_yield', 'annual_volatility', 'max_drawdown',
         'sharpe_ratio', 'kama_ratio', 'info_ratio', 'alpha', 'beta',
     ]
     risk_table = None
-    if risk:
-        indicators = {
-            'total_return': header.since_inception_rise if header else None,
-            'annual_yield': risk.annual_yield_since,
-            'annual_volatility': risk.annual_volatility_since,
-            'max_drawdown': risk.max_drawdown_since,
-            'sharpe_ratio': risk.sharpe_ratio_since,
-            'kama_ratio': risk.kama_ratio_since,
-            'info_ratio': risk.info_ratio_since,
-            'alpha': risk.alpha_since,
-            'beta': risk.beta_since,
-        }
+    indicators = {}
+    if len(navs) >= 2:
+        bench_rets = _load_nhci_returns()
+        last_date = navs[-1][0]
+        windows = {'since': navs}
+        for label, days_back in (('1y', 365), ('2y', 730), ('3y', 1095)):
+            cutoff = last_date - timedelta(days=days_back)
+            windows[label] = [x for x in navs if x[0] >= cutoff] or navs[-1:]
+        window_metrics = {label: _nav_window_metrics(seq, bench_rets) for label, seq in windows.items()}
         risk_table = {
-            metric: {p: getattr(risk, f'{metric}_{p}') for p in risk_periods}
+            metric: {p: window_metrics[p][metric] for p in risk_periods}
             for metric in risk_metrics
         }
+        since_m = window_metrics['since']
+        indicators = {
+            'total_return': navs[-1][1] / navs[0][1] - 1,
+            **{k: since_m[k] for k in risk_metrics},
+        }
 
-    # 净值序列：从 perf_net_values 查询，按日期升序
-    nav_qs = PerfNetValues.objects.filter(pid=pid_int, trade_date__isnull=False).order_by('trade_date')
-    nav_series = []
-    prev_nv = None
-    peak = None  # 用于计算回撤
-    for n in nav_qs:
-        nv = n.net_value
-        if nv is None:
-            continue
-        # 累计收益率（基于首日净值）
-        if prev_nv is None:
-            cum_ret = 0.0
-            base_nv = nv
-        else:
-            cum_ret = (nv / base_nv - 1) if base_nv else 0.0
-        # 回撤
-        if peak is None or nv > peak:
-            peak = nv
-        drawdown = (nv / peak - 1) if peak else 0.0
-        nav_series.append({
-            'date': n.trade_date.isoformat() if n.trade_date else None,
-            'nav': nv,
-            'cum_return': round(cum_ret * 100, 4),
-            'drawdown': round(drawdown * 100, 4),
-        })
-        prev_nv = nv
+    # 基本信息（单账号 / 合并模式字段兼容）
+    accts = {m.account_id: m for m in MomAccountRecord.objects.filter(account_id__in=accounts)}
+    def _pick(field):
+        for code in accounts:
+            a = accts.get(code)
+            if a and getattr(a, field):
+                return getattr(a, field)
+        return None
+    active_codes = [c for c in accounts if accts.get(c) and accts[c].is_stop != 1]
+    invest_codes = active_codes if active_codes else accounts
+    # 该投顾是否属于同名多账号组（用于前端提供「查看合并业绩」入口）
+    mergeable = False
+    if base_acct and base_acct.account_name:
+        mergeable = MomAccountRecord.objects.filter(
+            account_name=base_acct.account_name
+        ).count() > 1
+    rj = product.raw_json or {}
+    if is_merge:
+        display_name = _pick('account_name') or product.product_name
+    else:
+        display_name = product.product_name
+    info = {
+        'pid': product.pid,
+        'product_name': display_name,
+        'group_name': rj.get('groupName'),
+        'product_type': product.product_type,
+        'last_edit_ts': product.last_edit_ts,
+        'data_update_date': navs[-1][0].isoformat() if navs else None,
+        # 投顾概览（来自 mom_account_record）
+        'account_name': _pick('account_name'),
+        'account_code': '、'.join(accounts),
+        'account_codes': accounts,
+        'account_pids': {p.product_name: p.pid for p in group_products},
+        'account_count': len(accounts),
+        'merged': is_merge,
+        'mergeable': mergeable,
+        'is_stop': 1 if accounts and all(
+            accts.get(c) and accts[c].is_stop == 1 for c in accounts) else 0,
+        'invest_logic': _pick('invest_logic'),
+        'invest_cate': _pick('invest_cate'),
+        'product_name_cn': base_acct.product_name if base_acct else None,
+        'cum_investment': sum(
+            float(accts[c].cum_investment or 0) for c in invest_codes
+            if accts.get(c)) or None,
+    }
 
     return Response({
         'info': info,
         'indicators': indicators,
         'risk_table': risk_table,
         'nav_series': nav_series,
-        'benchmark_series': (
-            _benchmark_series_for_dates([
-                _date.fromisoformat(p['date'])
-                for p in nav_series if p['date']
-            ]) if nav_series else []
-        ),
+        'benchmark_series': _benchmark_series_for_dates([d for d, _ in navs]) if navs else [],
     })
 
 
@@ -3124,6 +3161,12 @@ def strategy_portfolio(request):
     ?pids=1,2,3            组合成分投顾 pid 列表（必填）
     ?model=equal           权重模型：equal 等权 / mv 均值方差 / rp 风险平价 / custom 自定义
     ?weights=30,30,40      custom 模型下的自定义权重（百分数或小数均可，自动归一化）
+    ?equity=settle         权益口径：settle 期末结存（默认，结算单口径） / mv 市值权益（收盘价重估）
+
+    成分净值数据源 rh_funds（所选口径权益 + 出入金），
+    份额法还原净值：share_t = share_{t-1} + flow_t / nav_{t-1}，nav_t = equity_t / share_t；
+    同名多账户投顾自动合并（经 MomAccountRecord 账号组）。
+    成分日收益率 = nav_t / nav_{t-1} - 1。
 
     智能模型基于各成分投顾日收益率序列在接口内现算：
     - rp  风险平价：等风险贡献（ERC），协方差坐标下降迭代求解
@@ -3133,13 +3176,17 @@ def strategy_portfolio(request):
     import math
     import statistics
 
-    from .models import MomAccountRecord, PerfHeaderStats, PerfNetValues, PerfProducts
+    from .models import MomAccountRecord, PerfProducts
 
     pids_raw = request.query_params.get('pids', '').strip()
     weights_raw = request.query_params.get('weights', '').strip()
     model = (request.query_params.get('model') or 'equal').strip().lower()
-    if model not in ('equal', 'mv', 'rp', 'custom'):
-        return Response({'detail': 'model 仅支持 equal / mv / rp / custom'}, status=400)
+    if model not in ('equal', 'mv', 'rp', 'custom', 'fund'):
+        return Response({'detail': 'model 仅支持 equal / mv / rp / custom / fund'}, status=400)
+    equity = (request.query_params.get('equity') or 'settle').strip().lower()
+    if equity not in ('settle', 'mv'):
+        return Response({'detail': 'equity 仅支持 settle / mv'}, status=400)
+    equity_col = 'settle_balance' if equity == 'settle' else 'market_value_equity'
     if not pids_raw:
         return Response({'detail': '缺少 pids 参数'}, status=400)
 
@@ -3151,17 +3198,45 @@ def strategy_portfolio(request):
     if not pids:
         return Response({'detail': 'pids 参数无效'}, status=400)
 
-    # 各成分投顾净值序列 {pid: {date: nv}}
-    nav_qs = (
-        PerfNetValues.objects
-        .filter(pid__in=pids, trade_date__isnull=False, net_value__isnull=False)
-        .order_by('trade_date')
-        .values_list('pid', 'trade_date', 'net_value')
-    )
+    # 各成分投顾净值序列 {pid: {date: nav}}
+    # 数据源 rh_funds：市值权益 + 出入金份额法现算（同名多账户合并）
+    pid_products = {p.pid: p.product_name for p in PerfProducts.objects.filter(pid__in=pids)}
+
+    def _resolve_accounts(code):
+        """pid 对应产品账号 → MomAccountRecord 同名账号组（多账户合并）。"""
+        base = MomAccountRecord.objects.filter(account_id=code).first()
+        if base and base.account_name:
+            return list(
+                MomAccountRecord.objects
+                .filter(account_name=base.account_name)
+                .values_list('account_id', flat=True)
+            )
+        return [code]
+
+    pid_accounts = {}
+    all_accounts = set()
+    for pid in pids:
+        code = pid_products.get(pid)
+        if not code:
+            continue
+        accs = _resolve_accounts(code)
+        pid_accounts[pid] = accs
+        all_accounts.update(accs)
+
+    acc_daily = {}  # account -> {date: (equity, flow)}（仅 rh_funds 覆盖账户；缺失账户由 helper 合成）
+    group_daily = {}  # pid -> 组内每日聚合 {date: [equity, flow]}
+    for pid, accs in pid_accounts.items():
+        daily, _covered = _group_equity_daily(accs, equity_col)
+        group_daily[pid] = daily
+
     nav_map = {pid: {} for pid in pids}
-    for pid, d, nv in nav_qs:
-        if nv and nv > 0:
-            nav_map[pid][d] = nv
+    latest_mv = {}  # pid -> 组内最新权益（最新市值，与权益口径一致）
+    for pid in pids:
+        daily = group_daily.get(pid) or {}
+        if daily:
+            latest_mv[pid] = daily[max(daily)][0]
+        for d, nav in _share_method_nav(daily):
+            nav_map[pid][d] = nav
 
     # 只保留有净值数据的成分
     valid_pids = [pid for pid in pids if nav_map[pid]]
@@ -3274,29 +3349,61 @@ def strategy_portfolio(request):
 
         return [1.0 / n] * n, None
 
-    weights, weight_note = _compute_weights()
+    if model == 'fund':
+        # 整体运作（fund）：组合视作单一投顾——各成员组每日权益与现金流直接合并，
+        # 后上线投顾的初始投入按组合入金经份额法并入，无权重概念
+        merged_daily = {}
+        for pid in valid_pids:
+            for d, (eq, fl) in (group_daily.get(pid) or {}).items():
+                v = merged_daily.setdefault(d, [0.0, 0.0])
+                v[0] += eq
+                v[1] += fl
+        port_nav_list = _share_method_nav(merged_daily)
 
-    # 交易日并集（各成分任一有净值/收益的日期）
-    all_dates = sorted(set().union(*(set(nav_map[pid].keys()) for pid in valid_pids)))
+        all_dates = [d for d, _ in port_nav_list]
+        port_nav = port_nav_list[-1][1] if port_nav_list else 1.0
+        nav_series = []
+        port_rets = []
+        peak = None
+        prev_nav = None
+        for d, nav in port_nav_list:
+            if peak is None or nav > peak:
+                peak = nav
+            r = (nav / prev_nav - 1) if prev_nav else 0.0
+            nav_series.append({
+                'date': d.isoformat(),
+                'nav': round(nav, 6),
+                'cum_return': round((nav - 1) * 100, 4),
+                'drawdown': round((nav / peak - 1) * 100, 4) if peak else 0.0,
+            })
+            port_rets.append(r)
+            prev_nav = nav
+        weights = [None] * len(valid_pids)
+        weight_note = '整体运作：组合视作单一投顾，后上线成分的投入按组合入金处理，无权重概念'
+    else:
+        weights, weight_note = _compute_weights()
 
-    # 组合净值/累计收益/回撤
-    port_nav = 1.0
-    peak = 1.0
-    nav_series = []
-    port_rets = []
-    for d in all_dates:
-        r = sum(w * daily_ret[pid].get(d, 0.0) for pid, w in zip(valid_pids, weights))
-        port_nav *= (1 + r)
-        if port_nav > peak:
-            peak = port_nav
-        drawdown = port_nav / peak - 1
-        nav_series.append({
-            'date': d.isoformat(),
-            'nav': round(port_nav, 6),
-            'cum_return': round((port_nav - 1) * 100, 4),
-            'drawdown': round(drawdown * 100, 4),
-        })
-        port_rets.append(r)
+        # 交易日并集（各成分任一有净值/收益的日期）
+        all_dates = sorted(set().union(*(set(nav_map[pid].keys()) for pid in valid_pids)))
+
+        # 组合净值/累计收益/回撤
+        port_nav = 1.0
+        peak = 1.0
+        nav_series = []
+        port_rets = []
+        for d in all_dates:
+            r = sum(w * daily_ret[pid].get(d, 0.0) for pid, w in zip(valid_pids, weights))
+            port_nav *= (1 + r)
+            if port_nav > peak:
+                peak = port_nav
+            drawdown = port_nav / peak - 1
+            nav_series.append({
+                'date': d.isoformat(),
+                'nav': round(port_nav, 6),
+                'cum_return': round((port_nav - 1) * 100, 4),
+                'drawdown': round(drawdown * 100, 4),
+            })
+            port_rets.append(r)
 
     # 风险收益指标（无风险利率取 1.5%）
     days = len(port_rets)
@@ -3316,34 +3423,65 @@ def strategy_portfolio(request):
         'end_date': all_dates[-1].isoformat() if all_dates else None,
     }
 
-    # 成分明细：名称/权重/自身以来累计收益/最新净值/规模
+    # 成分明细：名称/权重/累计收益/最新净值/规模
     products = {p.pid: p for p in PerfProducts.objects.filter(pid__in=valid_pids)}
-    accts = {m.account_id: m for m in MomAccountRecord.objects.filter(
-        account_id__in=[p.product_name for p in products.values()])}
-    headers = {}
-    seen = set()
-    for h in PerfHeaderStats.objects.filter(pid__in=valid_pids, trade_date__isnull=False).order_by('-trade_date'):
-        if h.pid not in seen:
-            seen.add(h.pid)
-            headers[h.pid] = h
+    # 组内全部账号的账户记录（总投资金额按同名组合并，含已清盘账户）
+    group_account_set = {acc for pid in valid_pids for acc in pid_accounts.get(pid, [])}
+    accts = {m.account_id: m for m in MomAccountRecord.objects.filter(account_id__in=group_account_set)}
+    # 账号代码 → pid（供前端点击代码跳转对应投顾业绩页）
+    code_pid_map = {
+        p.product_name: p.pid
+        for p in PerfProducts.objects.filter(product_name__in=group_account_set)
+    }
+    # 账号级日序列（算每账号累计盈亏）
+    acct_series, _rh_covered = _account_series(sorted(group_account_set), equity_col)
 
     advisors = []
     for pid, w in zip(valid_pids, weights):
         product = products.get(pid)
         acct = accts.get(product.product_name) if product else None
-        header = headers.get(pid)
+        navs = sorted(nav_map[pid].items())
+        # 组合累计总投入：同名组全部账户 cum_investment 合计
+        group_codes = pid_accounts.get(pid, [])
+        group_invest_vals = [
+            float(accts[c].cum_investment) for c in group_codes
+            if accts.get(c) and accts[c].cum_investment is not None
+        ]
         advisors.append({
             'pid': pid,
-            'account_code': acct.account_id if acct else (product.product_name if product else str(pid)),
+            # 代码显示组内全部账号（与净值/投入口径一致）
+            'account_code': '、'.join(group_codes) if group_codes else (
+                acct.account_id if acct else (product.product_name if product else str(pid))),
+            'account_codes': group_codes,
+            'account_pids': {c: code_pid_map[c] for c in group_codes if c in code_pid_map},
+            # 账号级明细：每个账号的起止日期、累计投入与累计盈亏
+            # 截至日期优先用人工维护的清盘日期（liquidation_date）
+            'accounts': [
+                {
+                    'code': c,
+                    'pid': code_pid_map.get(c),
+                    'cum_investment': (
+                        float(accts[c].cum_investment)
+                        if accts.get(c) and accts[c].cum_investment is not None else None
+                    ),
+                    'pnl': _account_pnl(acct_series.get(c) or {}),
+                    'start_date': min(acct_series[c]).isoformat() if acct_series.get(c) else None,
+                    'end_date': (
+                        accts[c].liquidation_date.isoformat()
+                        if accts.get(c) and accts[c].liquidation_date
+                        else (max(acct_series[c]).isoformat() if acct_series.get(c) else None)
+                    ),
+                }
+                for c in group_codes
+            ],
             'account_name': acct.account_name if acct else None,
             'invest_logic': acct.invest_logic if acct else None,
-            'weight': round(w * 100, 2),
-            'latest_nav': round(next(reversed(list(nav_map[pid].values()))), 4) if nav_map[pid] else None,
-            'total_return': (round((header.since_inception_rise or 0) * 100, 4)
-                             if header and header.since_inception_rise is not None else None),
-            'cum_investment': float(acct.cum_investment) if acct and acct.cum_investment is not None else None,
-            'mk_bf': float(acct.mk_bf) if acct and acct.mk_bf is not None else None,
-            'new_add': float(acct.new_add) if acct and acct.new_add is not None else None,
+            'weight': round(w * 100, 2) if w is not None else None,
+            'latest_nav': round(navs[-1][1], 4) if navs else None,
+            # 累计收益与组合同口径：成分净值（rh_funds 权益+出入金份额法）末日/首日
+            'total_return': (navs[-1][1] / navs[0][1] - 1) if navs else None,
+            'cum_investment': round(sum(group_invest_vals), 2) if group_invest_vals else None,
+            'latest_mv': latest_mv.get(pid),
         })
 
     # 组合规模合计
@@ -3351,11 +3489,16 @@ def strategy_portfolio(request):
         vals = [a[field] for a in advisors if a[field] is not None]
         return round(sum(vals), 2) if vals else None
 
+    # 组合累计盈亏：Σ全部成分账号的账号级累计盈亏（含已清盘账号出金带走的盈利）
+    total_pnl_vals = [
+        p for p in (_account_pnl(s) for s in acct_series.values())
+        if p is not None
+    ]
     scale = {
         'advisor_count': len(advisors),
         'cum_investment': _sum('cum_investment'),
-        'mk_bf': _sum('mk_bf'),
-        'new_add': _sum('new_add'),
+        'latest_mv': _sum('latest_mv'),
+        'total_pnl': round(sum(total_pnl_vals), 2) if total_pnl_vals else None,
     }
 
     # 成分对比曲线（各投顾以自身首日净值归一的累计收益）
@@ -3375,9 +3518,11 @@ def strategy_portfolio(request):
 
     return Response({
         'model': model,
+        'equity': equity,
         'weight_note': weight_note,
         'metrics': metrics,
         'nav_series': nav_series,
+        'benchmark_series': _benchmark_series_for_dates(all_dates),
         'advisors': advisors,
         'scale': scale,
         'member_series': member_series,
@@ -3389,30 +3534,60 @@ MODEL_LABELS = {
     'mv': '均值方差',
     'rp': '风险平价',
     'custom': '自定义',
+    'fund': '整体运作',
 }
+
+
+def _portfolio_record_dto(record):
+    return {
+        'id': record.id,
+        'name': record.name,
+        'note': record.note,
+        'pids': record.pids,
+        'weights': record.weights,
+        'weight_model': record.weight_model,
+        'weight_model_label': MODEL_LABELS.get(record.weight_model, record.weight_model),
+        'owner_id': record.owner_id,
+        'owner_name': record.owner.username if record.owner else None,
+        'created_at': record.created_at,
+        'updated_at': record.updated_at,
+    }
+
+
+def _can_manage(record, user):
+    """本人或超管可编辑/删除；公共组合（owner=NULL）仅超管可管理。"""
+    if not (user and user.is_authenticated):
+        return False
+    if user.is_superuser:
+        return True
+    return record.owner_id == user.id
 
 
 @api_view(['GET', 'POST'])
 @permission_classes([AllowAny])
 def portfolio_records(request):
-    """我的组合列表 / 新建保存组合。"""
+    """我的组合列表 / 新建保存组合。
+
+    组合归属登录用户：GET 返回 自己的 + 公共（owner=NULL）组合，未登录仅返回公共组合；
+    POST 需登录（组合归属当前用户）；编辑仅限本人（超管可管理全部）。
+    """
     from .models import StrategyPortfolioRecord
 
     if request.method == 'GET':
-        qs = StrategyPortfolioRecord.objects.order_by('-updated_at')
-        return Response([{
-            'id': r.id,
-            'name': r.name,
-            'note': r.note,
-            'pids': r.pids,
-            'weights': r.weights,
-            'weight_model': r.weight_model,
-            'weight_model_label': MODEL_LABELS.get(r.weight_model, r.weight_model),
-            'created_at': r.created_at,
-            'updated_at': r.updated_at,
-        } for r in qs])
+        qs = StrategyPortfolioRecord.objects.select_related('owner').order_by('-updated_at')
+        if not (request.user and request.user.is_authenticated):
+            qs = qs.filter(owner__isnull=True)
+        elif not request.user.is_superuser:
+            qs = qs.filter(Q(owner=request.user) | Q(owner__isnull=True))
+        return Response([
+            {**_portfolio_record_dto(r),
+             'is_mine': request.user.is_authenticated and r.owner_id == request.user.id}
+            for r in qs
+        ])
 
-    # POST：保存组合
+    # POST：保存组合（需登录）
+    if not (request.user and request.user.is_authenticated):
+        return Response({'detail': '登录后才能保存组合'}, status=401)
     payload = request.data or {}
     name = str(payload.get('name') or '').strip()
     pids = payload.get('pids')
@@ -3448,49 +3623,34 @@ def portfolio_records(request):
             record = StrategyPortfolioRecord.objects.get(pk=record_id)
         except StrategyPortfolioRecord.DoesNotExist:
             return Response({'detail': '组合不存在'}, status=404)
+        if not _can_manage(record, request.user):
+            return Response({'detail': '只能编辑自己的组合'}, status=403)
         record.name, record.note = name, note
         record.pids, record.weights, record.weight_model = pids, weights, model
         record.save()
     else:
         record = StrategyPortfolioRecord.objects.create(
-            name=name[:100], note=note, pids=pids, weights=weights, weight_model=model)
-    return Response({
-        'id': record.id,
-        'name': record.name,
-        'note': record.note,
-        'pids': record.pids,
-        'weights': record.weights,
-        'weight_model': record.weight_model,
-        'weight_model_label': MODEL_LABELS.get(record.weight_model, record.weight_model),
-        'created_at': record.created_at,
-        'updated_at': record.updated_at,
-    }, status=201 if not record_id else 200)
+            name=name[:100], note=note, pids=pids, weights=weights,
+            weight_model=model, owner=request.user if request.user.is_authenticated else None)
+    return Response(_portfolio_record_dto(record), status=201 if not record_id else 200)
 
 
 @api_view(['GET', 'DELETE'])
 @permission_classes([AllowAny])
 def portfolio_record_detail(request, pk):
-    """查询单个组合 / 删除指定组合。"""
+    """查询单个组合 / 删除指定组合（删除限本人或超管）。"""
     from .models import StrategyPortfolioRecord
 
     try:
-        record = StrategyPortfolioRecord.objects.get(pk=pk)
+        record = StrategyPortfolioRecord.objects.select_related('owner').get(pk=pk)
     except StrategyPortfolioRecord.DoesNotExist:
         return Response({'detail': '组合不存在'}, status=404)
 
     if request.method == 'GET':
-        return Response({
-            'id': record.id,
-            'name': record.name,
-            'note': record.note,
-            'pids': record.pids,
-            'weights': record.weights,
-            'weight_model': record.weight_model,
-            'weight_model_label': MODEL_LABELS.get(record.weight_model, record.weight_model),
-            'created_at': record.created_at,
-            'updated_at': record.updated_at,
-        })
+        return Response(_portfolio_record_dto(record))
 
+    if not _can_manage(record, request.user):
+        return Response({'detail': '只能删除自己的组合'}, status=403)
     record.delete()
     return Response({'detail': '已删除'})
 

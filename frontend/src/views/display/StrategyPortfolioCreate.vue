@@ -72,6 +72,7 @@
             >
               <span style="font-size:12.5px">{{ a.account_name || a.product_name }}</span>
               <span class="d-muted d-mono" style="font-size:10px;margin-left:6px">{{ a.account_code || a.product_name }}</span>
+              <span v-if="a.account_count > 1" class="d-pill info" style="margin-left:6px;font-size:10px">合并{{ a.account_count }}账户</span>
               <span v-if="isSelected(a.pid)" class="d-pill info" style="margin-left:auto;font-size:10px">已添加</span>
             </div>
           </div>
@@ -89,7 +90,10 @@
             </thead>
             <tbody>
               <tr v-for="item in selected" :key="item.pid">
-                <td>{{ item.account_name || item.product_name }}</td>
+                <td>
+                  {{ item.account_name || item.product_name }}
+                  <span v-if="item.account_count > 1" class="d-pill info" style="font-size:10px;margin-left:6px">合并{{ item.account_count }}账户</span>
+                </td>
                 <td class="d-mono d-muted">{{ item.account_code || item.product_name }}</td>
                 <td>
                   <input
@@ -143,15 +147,18 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import client from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
 
 const MODEL_OPTIONS = [
   { value: 'equal', label: '等权' },
+  { value: 'fund', label: '整体运作' },
   { value: 'rp', label: '风险平价' },
   { value: 'mv', label: '均值方差' },
   { value: 'custom', label: '自定义' },
 ]
 const MODEL_HINTS = {
   equal: '各成分等比例分配',
+  fund: '组合视作单一投顾：后上线投顾的投入按组合入金并入，无权重概念',
   rp: '等风险贡献（ERC）：低波动投顾自动获得更高权重',
   mv: '最大夏普切点组合：基于历史收益与协方差优化',
   custom: '手动输入各成分权重（自动归一化）',
@@ -159,6 +166,7 @@ const MODEL_HINTS = {
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 
 const isEdit = computed(() => !!route.query.id)
 const recordId = ref(null)
@@ -211,6 +219,7 @@ function addAdvisor(a) {
     product_name: a.product_name,
     account_name: a.account_name,
     account_code: a.account_code || a.product_name,
+    account_count: a.account_count || 1,
     weight: 0,
   })
   if (model.value === 'custom') equalWeights()
@@ -240,6 +249,11 @@ function switchModel(m) {
 
 async function save() {
   if (!canSave.value) return
+  if (!auth.isAuthenticated) {
+    error.value = '请先登录，组合将保存到你的账号下'
+    setTimeout(() => router.push('/login?redirect=' + encodeURIComponent(route.fullPath)), 900)
+    return
+  }
   saving.value = true
   error.value = ''
   try {
@@ -256,6 +270,11 @@ async function save() {
     router.push(`/display/strategy/portfolio/detail/${data.id}`)
   } catch (e) {
     console.error('保存组合失败', e)
+    if (e.response?.status === 401) {
+      error.value = '登录已过期，请重新登录'
+      setTimeout(() => router.push('/login?redirect=' + encodeURIComponent(route.fullPath)), 900)
+      return
+    }
     error.value = e.response?.data?.detail || '保存组合失败'
   } finally {
     saving.value = false
@@ -264,12 +283,12 @@ async function save() {
 
 onMounted(async () => {
   try {
-    const { data } = await client.get('/tables/advisor/performance/')
+    const { data } = await client.get('/tables/advisor/performance/?merge=1')
     allAdvisors.value = data || []
   } catch (e) {
     console.error('获取投顾列表失败', e)
   }
-  // 编辑模式：回填已有组合
+  // 编辑模式：回填已有组合（组内任意 pid 均映射到合并条目）
   if (route.query.id) {
     try {
       const { data: r } = await client.get(`/tables/strategy/portfolios/${route.query.id}/`)
@@ -277,16 +296,25 @@ onMounted(async () => {
       recordName.value = r.name
       recordNote.value = r.note || ''
       model.value = r.weight_model || 'equal'
-      const byPid = new Map(allAdvisors.value.map((a) => [a.pid, a]))
+      const byPid = new Map()
+      allAdvisors.value.forEach((a) => (a.pids || [a.pid]).forEach((p) => byPid.set(p, a)))
       r.pids.forEach((pid, i) => {
         const a = byPid.get(pid)
         selected.value.push({
-          pid,
+          pid: a ? a.pid : pid,
           product_name: a?.product_name || String(pid),
           account_name: a?.account_name || null,
           account_code: a?.account_code || a?.product_name || String(pid),
+          account_count: a?.account_count || 1,
           weight: Number(r.weights?.[i]) || 0,
         })
+      })
+      // 去重：旧组合可能同时含同组多个 pid
+      const seen = new Set()
+      selected.value = selected.value.filter((it) => {
+        if (seen.has(it.pid)) return false
+        seen.add(it.pid)
+        return true
       })
       if (model.value !== 'custom' && !r.weights?.length) equalWeights()
     } catch (e) {

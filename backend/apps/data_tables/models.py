@@ -30,6 +30,7 @@ class MomAccountRecord(models.Model):
     tips = models.CharField(max_length=255, blank=True, null=True, db_comment='说明')
     invest_cate = models.CharField(max_length=255, blank=True, null=True, db_comment='投资品种')
     invest_logic = models.CharField(max_length=255, blank=True, null=True, db_comment='投资逻辑')
+    liquidation_date = models.DateField(blank=True, null=True, db_comment='清盘日期（人工维护）')
 
     class Meta:
         managed = False
@@ -772,6 +773,10 @@ class StrategyPortfolioRecord(models.Model):
     weight_model = models.CharField(
         max_length=20, default='equal',
         db_comment='权重模型：equal 等权 / mv 均值方差 / rp 风险平价 / custom 自定义',
+    )
+    owner = models.ForeignKey(
+        'auth.User', null=True, blank=True, on_delete=models.CASCADE,
+        db_column='owner_id', db_comment='归属用户（NULL=公共组合）',
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
