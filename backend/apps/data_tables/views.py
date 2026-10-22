@@ -476,10 +476,18 @@ def advisor_performance_list(request):
 
     ?merge=1：同名投顾（mom_account_record.account_name 相同）多账号合并为一行；
     默认逐账号一行。
+
+    结果按 merge 参数缓存 10 分钟（数据为日频更新，指标无需实时重算）。
     """
     from collections import defaultdict
+    from django.core.cache import cache
 
     merge = request.query_params.get('merge') == '1'
+
+    cache_key = f'advisor_perf_list_{int(merge)}'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return Response(cached)
 
     sql = """
         SELECT p.pid,
@@ -547,11 +555,14 @@ def advisor_performance_list(request):
             for d, acc, margin in cursor.fetchall():
                 margin_by_account.setdefault(acc, {})[d] = float(margin or 0)
 
+    # 一次性预取全部账号级序列，分组循环内复用（否则每组一条 SQL，数百组即数秒）
+    all_prefetched, _ = _account_series(sorted(all_accounts))
+
     result = []
     for key, g in groups.items():
         is_merged = merge and len(g) > 1
         accounts = [row['account_code'] for row in g]
-        daily, _covered = _group_equity_daily(accounts)
+        daily, _covered = _group_equity_daily(accounts, prefetched=all_prefetched)
         series = [(d, v[0], v[1]) for d, v in sorted(daily.items())]
         metrics = _merged_nav_metrics(series) or {}
         # 平均仓位：组内成立以来 Σmargin/Σequity 日均
@@ -597,6 +608,7 @@ def advisor_performance_list(request):
         })
 
     result.sort(key=lambda r: -(r.get('total_return') if r.get('total_return') is not None else -9999))
+    cache.set(cache_key, result, 60 * 10)
     return Response(result)
 
 
@@ -627,14 +639,21 @@ def _benchmark_series_for_dates(dates):
     return out
 
 
-def _account_series(accounts, equity_col='settle_balance'):
+def _account_series(accounts, equity_col='settle_balance', prefetched=None):
     """账号级日序列 {account: {date: [equity, flow]}} + rh_funds 覆盖账户集合。
 
     rh_funds 覆盖的账户：所选口径权益（默认结算权益）+ 出入金；
     rh_funds 无数据的账户（已清盘/数据未入库）：以 净值表净值 × 总投资规模
     合成权益曲线，首个净值日计一笔全额入金。
+    prefetched：可选，复用已预取的 {account: series} 结果（批量场景避免逐组查库），
+    其覆盖范围须包含 accounts。
     """
     from .models import MomAccountRecord, PerfNetValues, PerfProducts
+
+    if prefetched is not None:
+        covered = {a for a in accounts if prefetched.get(a)}
+        series = {a: prefetched.get(a, {}) for a in accounts}
+        return series, covered
 
     series = {}  # account -> {date: [equity, flow]}
     rh_covered = set()
@@ -697,14 +716,15 @@ def _account_pnl(s):
     return round(end_eq - total_flow, 2)
 
 
-def _group_equity_daily(accounts, equity_col='settle_balance'):
+def _group_equity_daily(accounts, equity_col='settle_balance', prefetched=None):
     """同名账号组每日聚合权益与现金流 {date: [equity, flow]}。
 
     账号级序列见 _account_series；账户数据早于组合末日结束（清盘/赎回/停更）时，
     在其次一交易日计全额出金，避免权益凭空消失被份额法误判为亏损。
+    prefetched：复用已预取的账号级序列（批量场景避免逐组查库）。
     返回 (daily, rh_covered账户集合)。
     """
-    series, rh_covered = _account_series(accounts, equity_col)
+    series, rh_covered = _account_series(accounts, equity_col, prefetched=prefetched)
 
     # 聚合 + 中断账户全额出金
     all_dates = sorted({d for s in series.values() for d in s})
@@ -2133,6 +2153,240 @@ def option_pnl(request):
         'rows': rows,
         'total': total,
         'source': 'realtime',
+    })
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def option_pnl_underlying(request):
+    """单个标的品种的期权盈亏详情：品种汇总 + 各投顾在该品种期权上的盈亏拆分。
+
+    ?underlying=MO：合约前导字母匹配（与期权盈亏列表口径一致）；
+    投顾行附投顾名（mom_account_record）与 pid（perf_products），
+    前端可直接链接到投顾业绩页；按权利金净收支倒序。
+
+    性能：LIKE 前缀粗筛 + REGEXP 精筛（collation 大小写不敏感），
+    两步聚合避免 GROUP BY account 走 account 索引回表；结果缓存 10 分钟。
+    """
+    from django.core.cache import cache
+
+    underlying = (request.query_params.get('underlying') or '').strip().upper()
+    if not underlying or not underlying.isalpha():
+        return Response({'detail': 'underlying 参数无效'}, status=400)
+
+    cache_key = f'option_pnl_underlying_{underlying}'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return Response(cached)
+
+    # 前导字母 + 期权合约形态（如 MO2609-C-2550 / SR309C5700）
+    # collation 为 0900_ai_ci（大小写不敏感），LIKE/REGEXP 无需字符类
+    where = f"contract LIKE %s AND contract REGEXP '^{underlying}[0-9]{{3,4}}-?[CP]-?'"
+
+    with connection.cursor() as cursor:
+        # 投顾行：先按 (account, contract) 细分再按 account 聚合，
+        # 避免 GROUP BY account 直接过滤全表 COUNT(DISTINCT) 的开销
+        cursor.execute(
+            f"""
+            SELECT t.account,
+                   COUNT(*)                    AS contracts,
+                   SUM(t.trades)               AS trades,
+                   SUM(t.premium)              AS premium,
+                   SUM(t.fee)                  AS fee,
+                   MIN(t.first_date)           AS first_date,
+                   MAX(t.last_date)            AS last_date
+            FROM (
+                SELECT account, contract,
+                       COUNT(*)                                   AS trades,
+                       SUM(COALESCE(premium_income_expense, 0))  AS premium,
+                       SUM(COALESCE(fee, 0))                     AS fee,
+                       MIN(trade_date)                           AS first_date,
+                       MAX(trade_date)                           AS last_date
+                FROM rh_trades
+                WHERE {where}
+                GROUP BY account, contract
+            ) t
+            GROUP BY t.account
+            ORDER BY premium DESC
+            """,
+            [f'{underlying}%'],
+        )
+        advisor_rows = cursor.fetchall()
+        if not advisor_rows:
+            payload = {'detail': '该品种无期权成交记录'}
+            return Response(payload, status=404)
+
+        # 品种级合约数（跨投顾去重）与数据截止日
+        cursor.execute(
+            f"""
+            SELECT COUNT(DISTINCT contract), MAX(trade_date)
+            FROM rh_trades
+            WHERE {where}
+            """,
+            [f'{underlying}%'],
+        )
+        total_contracts, last_date = cursor.fetchone()
+
+        # 投顾名 / 停止状态 / 业绩页 pid
+        accounts = [r[0] for r in advisor_rows]
+        name_map, stop_map, pid_map = {}, {}, {}
+        if accounts:
+            cursor.execute(
+                """
+                SELECT m.account_id, m.account_name, m.is_stop, p.pid
+                FROM mom_account_record m
+                LEFT JOIN perf_products p ON p.product_name = m.account_id
+                WHERE m.account_id IN %s
+                """,
+                [tuple(accounts)],
+            )
+            for acc, nm, stop, pid in cursor.fetchall():
+                name_map[acc] = nm
+                stop_map[acc] = stop
+                pid_map[acc] = pid
+
+        cursor.execute(
+            'SELECT symbol_name FROM fut_symbol_info WHERE UPPER(symbol_code) = %s',
+            [underlying],
+        )
+        row0 = cursor.fetchone()
+        name = row0[0] if row0 and row0[0] else underlying
+
+    advisors = [
+        {
+            'account': r[0],
+            'account_name': name_map.get(r[0]) or r[0],
+            'pid': pid_map.get(r[0]),
+            'is_stop': 1 if stop_map.get(r[0]) == 1 else 0,
+            'contracts': int(r[1]),
+            'trades': int(r[2]),
+            'premium': float(r[3] or 0),
+            'fee': float(r[4] or 0),
+            'first_date': r[5].isoformat() if r[5] else None,
+            'last_date': r[6].isoformat() if r[6] else None,
+        }
+        for r in advisor_rows
+    ]
+    payload = {
+        'trade_date': last_date.isoformat() if last_date else None,
+        'underlying': underlying,
+        'name': name,
+        'summary': {
+            'premium': sum(a['premium'] for a in advisors),
+            'fee': sum(a['fee'] for a in advisors),
+            'contracts': int(total_contracts or 0),
+            'trades': sum(a['trades'] for a in advisors),
+            'advisors': len(advisors),
+        },
+        'advisors': advisors,
+    }
+    cache.set(cache_key, payload, 60 * 10)
+    return Response(payload)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def option_trades(request):
+    """单个投顾在单个品种期权上的成交记录明细（分页）。
+
+    ?account=250206_HC&underlying=MO&page=1&page_size=20：
+    account 走索引过滤 + 品种前导字母 LIKE/REGEXP 精筛期权合约；
+    返回该投顾该品种的汇总（权利金净收支/手续费/合约数/笔数/区间）与逐笔明细。
+    """
+    account = (request.query_params.get('account') or '').strip()
+    underlying = (request.query_params.get('underlying') or '').strip().upper()
+    if not account or not underlying or not underlying.isalpha():
+        return Response({'detail': 'account / underlying 参数无效'}, status=400)
+
+    try:
+        page = max(int(request.query_params.get('page', 1) or 1), 1)
+        page_size = min(max(int(request.query_params.get('page_size', 20) or 20), 1), 100)
+    except ValueError:
+        return Response({'detail': '分页参数无效'}, status=400)
+    offset = (page - 1) * page_size
+
+    # collation 大小写不敏感；account 索引先过滤再正则精筛
+    where = (
+        "account = %s AND contract LIKE %s "
+        f"AND contract REGEXP '^{underlying}[0-9]{{3,4}}-?[CP]-?'"
+    )
+    params_prefix = [account, f'{underlying}%']
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+            SELECT COUNT(DISTINCT contract), COUNT(*),
+                   SUM(COALESCE(premium_income_expense, 0)),
+                   SUM(COALESCE(fee, 0)),
+                   MIN(trade_date), MAX(trade_date)
+            FROM rh_trades
+            WHERE {where}
+            """,
+            params_prefix,
+        )
+        s = cursor.fetchone()
+        if not s or not s[1]:
+            return Response({'detail': '该投顾在此品种无期权成交'}, status=404)
+
+        cursor.execute(
+            f"""
+            SELECT r.trade_date, r.trade_time, r.contract, r.side, r.open_close,
+                   r.trade_price, r.trade_qty, r.trade_amount,
+                   r.premium_income_expense, r.fee
+            FROM rh_trades r
+            WHERE {where}
+            ORDER BY r.trade_date DESC, r.trade_time DESC, r.id DESC
+            LIMIT %s OFFSET %s
+            """,
+            [*params_prefix, page_size, offset],
+        )
+        trade_rows = [
+            {
+                'trade_date': row[0].isoformat() if row[0] else None,
+                'trade_time': row[1],
+                'contract': row[2],
+                'side': row[3],
+                'open_close': row[4],
+                'trade_price': row[5],
+                'trade_qty': row[6],
+                'trade_amount': row[7],
+                'premium_income_expense': float(row[8]) if row[8] is not None else None,
+                'fee': float(row[9]) if row[9] is not None else None,
+            }
+            for row in cursor.fetchall()
+        ]
+
+        cursor.execute(
+            'SELECT account_name FROM mom_account_record WHERE account_id = %s',
+            [account],
+        )
+        row0 = cursor.fetchone()
+        advisor_name = row0[0] if row0 and row0[0] else account
+
+        cursor.execute(
+            'SELECT symbol_name FROM fut_symbol_info WHERE UPPER(symbol_code) = %s',
+            [underlying],
+        )
+        row1 = cursor.fetchone()
+        underlying_name = row1[0] if row1 and row1[0] else underlying
+
+    return Response({
+        'account': account,
+        'advisor_name': advisor_name,
+        'underlying': underlying,
+        'underlying_name': underlying_name,
+        'summary': {
+            'contracts': int(s[0]),
+            'trades': int(s[1]),
+            'premium': float(s[2] or 0),
+            'fee': float(s[3] or 0),
+            'first_date': s[4].isoformat() if s[4] else None,
+            'last_date': s[5].isoformat() if s[5] else None,
+        },
+        'page': page,
+        'page_size': page_size,
+        'total': int(s[1]),
+        'rows': trade_rows,
     })
 
 

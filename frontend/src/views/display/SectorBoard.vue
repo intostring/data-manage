@@ -128,7 +128,10 @@
                     <span class="pnr-rank">{{ row.rank }}</span>
                   </td>
                   <td>
-                    <span class="pnr-name">{{ row.name }}</span>
+                    <router-link
+                      class="pnr-name"
+                      :to="{ name: 'display-option-underlying', query: { underlying: row.underlying } }"
+                    >{{ row.name }}</router-link>
                     <span class="pnr-code">{{ row.underlying }}</span>
                   </td>
                   <td class="d-mono">{{ row.contracts ?? '—' }}</td>

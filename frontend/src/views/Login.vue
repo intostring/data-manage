@@ -23,7 +23,7 @@
             <span class="lg-title-accent">MOM 分析</span>
           </h1>
           <p class="lg-sub lg-rise" style="--d:.25s">
-            投顾业绩 · 持仓分析 · 板块风险，全景数据一屏尽览
+            投顾分析 · 持仓分析 · 板块风险，全景数据一屏尽览
           </p>
 
           <!-- 动态收益曲线 -->

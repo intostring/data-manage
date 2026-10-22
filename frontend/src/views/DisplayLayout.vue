@@ -173,7 +173,7 @@ let varietySearchTimer = null
 
 const modules = [
   { name: 'display-overview', label: '总览', path: '/display/overview', icon: LayoutDashboard },
-  { name: 'display-advisor', label: '投顾业绩', path: '/display/advisor', icon: TrendingUp },
+  { name: 'display-advisor', label: '投顾分析', path: '/display/advisor', icon: TrendingUp },
   {
     name: 'display-sector',
     label: '盈亏分析',
@@ -220,12 +220,14 @@ const modules = [
 
 const titleMap = {
   'display-overview': '总览',
-  'display-advisor': '投顾业绩',
-  'display-advisor-detail': '投顾业绩',
+  'display-advisor': '投顾分析',
+  'display-advisor-detail': '投顾分析',
   'display-sector': '盈亏分析',
   'display-sector-pnl': '品种盈亏',
   'display-sector-advisor-variety': '品种投顾明细',
   'display-sector-contract-kline': '合约成交明细',
+  'display-option-underlying': '期权品种盈亏',
+  'display-option-advisor-trades': '期权成交记录',
   'display-position': '持仓分析',
   'display-position-sector-analysis': '板块分析',
   'display-position-sector-detail': '板块持仓明细',
@@ -246,6 +248,10 @@ function isActive(name) {
   // 投顾业绩详情页时，「投顾业绩」父项保持高亮
   if (name === 'display-advisor') {
     return route.name === 'display-advisor' || route.name === 'display-advisor-detail'
+  }
+  // 期权品种盈亏 / 期权成交记录详情页时，「盈亏分析」父项保持高亮
+  if (name === 'display-sector') {
+    return ['display-sector', 'display-option-underlying', 'display-option-advisor-trades'].includes(route.name)
   }
   return route.name === name
 }
