@@ -1,8 +1,9 @@
 import re
+import decimal as _decimal
 from datetime import date as _date, timedelta
 
 from django.db import connection, models
-from django.db.models import Q
+from django.db.models import F, Q
 from django.http import HttpResponse
 from django.utils.dateparse import parse_date
 from rest_framework import viewsets
@@ -3980,3 +3981,252 @@ def table_template(request, key):
     )
     resp['Content-Disposition'] = f"attachment; filename*=UTF-8''{quote(filename)}"
     return resp
+
+
+# ==================== 产品运维 · 投顾信息台账 ====================
+
+def _advisor_info_dto(m):
+    return {
+        'id': m.id,
+        'name': m.name,
+        'account_code': m.account_code,
+        'invest_amount': float(m.invest_amount) if m.invest_amount is not None else None,
+        'max_margin_usage': float(m.max_margin_usage) if m.max_margin_usage is not None else None,
+        'warning_line': float(m.warning_line) if m.warning_line is not None else None,
+        'stop_loss_line': float(m.stop_loss_line) if m.stop_loss_line is not None else None,
+        'margin_call_risk': float(m.margin_call_risk) if m.margin_call_risk is not None else None,
+        'force_close_risk': float(m.force_close_risk) if m.force_close_risk is not None else None,
+        'dividend_rate': float(m.dividend_rate) if m.dividend_rate is not None else None,
+        'can_trade_option': bool(m.can_trade_option),
+        'option_trade_type': m.option_trade_type,
+        'product': m.product,
+        'run_status': m.run_status,
+        'suspend_date': m.suspend_date.isoformat() if m.suspend_date else None,
+        'create_date': m.create_date.isoformat() if m.create_date else None,
+        'liquidation_pnl': float(m.liquidation_pnl) if m.liquidation_pnl is not None else None,
+        'invest_tag': m.invest_tag,
+        'invest_logic': m.invest_logic,
+        'remark': m.remark,
+        'updated_at': m.updated_at.strftime('%Y-%m-%d %H:%M') if m.updated_at else None,
+    }
+
+
+def _advisor_info_apply(m, payload):
+    """按白名单字段更新并保存；姓名必填。"""
+    name = str(payload.get('name') or '').strip()
+    if not name:
+        raise ValueError('姓名不能为空')
+
+    def _dec(key):
+        v = payload.get(key)
+        if v in (None, ''):
+            return None
+        return _decimal.Decimal(str(v))
+
+    def _date(key):
+        v = str(payload.get(key) or '').strip()
+        if not v:
+            return None
+        d = parse_date(v)
+        return d if d else v
+
+    m.name = name
+    m.account_code = str(payload.get('account_code') or '').strip()
+    m.invest_amount = _dec('invest_amount')
+    m.max_margin_usage = _dec('max_margin_usage')
+    m.warning_line = _dec('warning_line')
+    m.stop_loss_line = _dec('stop_loss_line')
+    m.margin_call_risk = _dec('margin_call_risk')
+    m.force_close_risk = _dec('force_close_risk')
+    m.dividend_rate = _dec('dividend_rate')
+    m.can_trade_option = bool(payload.get('can_trade_option'))
+    m.option_trade_type = str(payload.get('option_trade_type') or '').strip()
+    m.product = str(payload.get('product') or '').strip()
+    m.run_status = str(payload.get('run_status') or '').strip() or '运行中'
+    m.suspend_date = _date('suspend_date')
+    m.create_date = _date('create_date')
+    m.liquidation_pnl = _dec('liquidation_pnl')
+    m.invest_tag = str(payload.get('invest_tag') or '').strip()
+    m.invest_logic = str(payload.get('invest_logic') or '').strip()
+    m.remark = str(payload.get('remark') or '').strip()
+    m.save()
+    return m
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([AllowAny])
+def advisor_info_records(request):
+    """投顾信息台账：GET 列表（?search= 按姓名/账户/产品模糊），POST 新建（需登录）。"""
+    from .models import AdvisorInfo
+
+    if request.method == 'GET':
+        qs = AdvisorInfo.objects.all().order_by(
+            F('create_date').desc(nulls_last=True), '-id'
+        )
+        search = request.query_params.get('search', '').strip()
+        if search:
+            qs = qs.filter(
+                Q(name__icontains=search)
+                | Q(account_code__icontains=search)
+                | Q(product__icontains=search)
+            )
+        # 分页：page 从 1 起，page_size 默认 20、上限 200
+        try:
+            page = max(int(request.query_params.get('page', 1)), 1)
+            page_size = min(max(int(request.query_params.get('page_size', 20)), 1), 200)
+        except (TypeError, ValueError):
+            page, page_size = 1, 20
+        total = qs.count()
+        items = qs[(page - 1) * page_size: page * page_size]
+        return Response({
+            'rows': [_advisor_info_dto(m) for m in items],
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+        })
+
+    if not (request.user and request.user.is_authenticated):
+        return Response({'detail': '登录后才能维护投顾信息'}, status=401)
+    try:
+        m = _advisor_info_apply(AdvisorInfo(), request.data or {})
+    except ValueError as e:
+        return Response({'detail': str(e)}, status=400)
+    except Exception as e:
+        if 'Duplicate' in str(e) or 'unique' in str(e).lower():
+            return Response({'detail': '该「姓名+操作账户」已存在'}, status=400)
+        raise
+    return Response(_advisor_info_dto(m), status=201)
+
+
+@api_view(['PUT', 'DELETE'])
+@permission_classes([AllowAny])
+def advisor_info_record_detail(request, pk):
+    """投顾信息台账：PUT 更新 / DELETE 删除（需登录）。"""
+    from .models import AdvisorInfo
+
+    if not (request.user and request.user.is_authenticated):
+        return Response({'detail': '登录后才能维护投顾信息'}, status=401)
+    m = AdvisorInfo.objects.filter(pk=pk).first()
+    if not m:
+        return Response({'detail': '记录不存在'}, status=404)
+    if request.method == 'DELETE':
+        m.delete()
+        return Response({'detail': '已删除'})
+    try:
+        m = _advisor_info_apply(m, request.data or {})
+    except ValueError as e:
+        return Response({'detail': str(e)}, status=400)
+    except Exception as e:
+        if 'Duplicate' in str(e) or 'unique' in str(e).lower():
+            return Response({'detail': '该「姓名+操作账户」已存在'}, status=400)
+        raise
+    return Response(_advisor_info_dto(m))
+
+
+# ==================== 产品运维 · 分红信息台账 ====================
+
+def _dividend_dto(m):
+    return {
+        'id': m.id,
+        'dividend_date': m.dividend_date.isoformat() if m.dividend_date else None,
+        'account_code': m.account_code,
+        'advisor_name': m.advisor_name,
+        'dividend_amount': float(m.dividend_amount) if m.dividend_amount is not None else None,
+        'withdraw_amount': float(m.withdraw_amount) if m.withdraw_amount is not None else None,
+        'product': m.product,
+        'remark': m.remark,
+        'updated_at': m.updated_at.strftime('%Y-%m-%d %H:%M') if m.updated_at else None,
+    }
+
+
+def _dividend_apply(m, payload):
+    """按白名单字段更新并保存。"""
+    m.dividend_date = _parse_date_str(payload.get('dividend_date'))
+    m.account_code = str(payload.get('account_code') or '').strip()
+    m.advisor_name = str(payload.get('advisor_name') or '').strip()
+
+    def _dec(key):
+        v = payload.get(key)
+        if v in (None, ''):
+            return None
+        return _decimal.Decimal(str(v))
+
+    m.dividend_amount = _dec('dividend_amount')
+    m.withdraw_amount = _dec('withdraw_amount')
+    m.product = str(payload.get('product') or '').strip()
+    m.remark = str(payload.get('remark') or '').strip()
+    m.save()
+    return m
+
+
+def _parse_date_str(v):
+    v = str(v or '').strip()
+    if not v:
+        return None
+    d = parse_date(v)
+    return d if d else v
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([AllowAny])
+def advisor_dividend_records(request):
+    """分红信息台账：GET 分页列表（?search= 按账户/投顾/产品模糊，按分红日期倒序），POST 新建（需登录）。"""
+    from .models import AdvisorDividend
+
+    if request.method == 'GET':
+        qs = AdvisorDividend.objects.all().order_by(
+            F('dividend_date').desc(nulls_last=True), '-id'
+        )
+        search = request.query_params.get('search', '').strip()
+        if search:
+            qs = qs.filter(
+                Q(account_code__icontains=search)
+                | Q(advisor_name__icontains=search)
+                | Q(product__icontains=search)
+            )
+        try:
+            page = max(int(request.query_params.get('page', 1)), 1)
+            page_size = min(max(int(request.query_params.get('page_size', 20)), 1), 200)
+        except (TypeError, ValueError):
+            page, page_size = 1, 20
+        total = qs.count()
+        items = qs[(page - 1) * page_size: page * page_size]
+        return Response({
+            'rows': [_dividend_dto(m) for m in items],
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+        })
+
+    if not (request.user and request.user.is_authenticated):
+        return Response({'detail': '登录后才能维护分红信息'}, status=401)
+    try:
+        m = _dividend_apply(AdvisorDividend(), request.data or {})
+    except Exception as e:
+        if 'Duplicate' in str(e) or 'unique' in str(e).lower():
+            return Response({'detail': '该「分红日期+操作账户」已存在'}, status=400)
+        return Response({'detail': f'保存失败: {e}'}, status=400)
+    return Response(_dividend_dto(m), status=201)
+
+
+@api_view(['PUT', 'DELETE'])
+@permission_classes([AllowAny])
+def advisor_dividend_record_detail(request, pk):
+    """分红信息台账：PUT 更新 / DELETE 删除（需登录）。"""
+    from .models import AdvisorDividend
+
+    if not (request.user and request.user.is_authenticated):
+        return Response({'detail': '登录后才能维护分红信息'}, status=401)
+    m = AdvisorDividend.objects.filter(pk=pk).first()
+    if not m:
+        return Response({'detail': '记录不存在'}, status=404)
+    if request.method == 'DELETE':
+        m.delete()
+        return Response({'detail': '已删除'})
+    try:
+        m = _dividend_apply(m, request.data or {})
+    except Exception as e:
+        if 'Duplicate' in str(e) or 'unique' in str(e).lower():
+            return Response({'detail': '该「分红日期+操作账户」已存在'}, status=400)
+        return Response({'detail': f'保存失败: {e}'}, status=400)
+    return Response(_dividend_dto(m))

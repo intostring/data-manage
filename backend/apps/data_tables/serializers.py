@@ -31,6 +31,8 @@ from .models import (
     RhPositions,
     RhTrades,
     TradeDays,
+    AdvisorInfo,
+    AdvisorDividend,
 )
 from .registry import table_registry
 
@@ -243,3 +245,21 @@ table_registry.register('fof_nav_hypo', FofNavHypo, FofNavHypoSerializer, 'FOF�
 table_registry.register('fof_product_nav', FofProductNav, FofProductNavSerializer, '渊流产品净值', 'fof')
 table_registry.register('fof_product_nav2', FofProductNav2, FofProductNav2Serializer, '臻选贰号净值', 'fof')
 table_registry.register('trade_days', TradeDays, TradeDaysSerializer, '交易日历', 'fof')
+
+
+class AdvisorInfoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AdvisorInfo
+        fields = '__all__'
+
+
+table_registry.register('mom_advisor_info', AdvisorInfo, AdvisorInfoSerializer, '投顾信息', 'mom')
+
+
+class AdvisorDividendSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AdvisorDividend
+        fields = '__all__'
+
+
+table_registry.register('mom_advisor_dividend', AdvisorDividend, AdvisorDividendSerializer, '分红信息', 'mom')

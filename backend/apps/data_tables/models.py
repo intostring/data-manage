@@ -783,3 +783,55 @@ class StrategyPortfolioRecord(models.Model):
 
     class Meta:
         db_table = 'strategy_portfolio_record'
+
+
+class AdvisorInfo(models.Model):
+    """产品运维 · 投顾信息台账（人工维护）。"""
+
+    id = models.BigAutoField(primary_key=True)
+    name = models.CharField('姓名', max_length=50, db_comment='姓名')
+    account_code = models.CharField('操作账户', max_length=100, blank=True, default='', db_comment='操作账户')
+    create_date = models.DateField('创建日期', blank=True, null=True, db_comment='创建日期')
+    invest_amount = models.DecimalField('投资金额', max_digits=18, decimal_places=2, blank=True, null=True, db_comment='投资金额')
+    max_margin_usage = models.DecimalField('最大保证金使用(%)', max_digits=10, decimal_places=4, blank=True, null=True, db_comment='最大保证金使用(%)')
+    warning_line = models.DecimalField('预警线', max_digits=10, decimal_places=4, blank=True, null=True, db_comment='预警线')
+    stop_loss_line = models.DecimalField('止损线', max_digits=10, decimal_places=4, blank=True, null=True, db_comment='止损线')
+    margin_call_risk = models.DecimalField('追保风险线', max_digits=18, decimal_places=2, blank=True, null=True, db_comment='追保风险线')
+    force_close_risk = models.DecimalField('强平风险线', max_digits=18, decimal_places=2, blank=True, null=True, db_comment='强平风险线')
+    dividend_rate = models.DecimalField('分红率', max_digits=10, decimal_places=4, blank=True, null=True, db_comment='分红率')
+    can_trade_option = models.BooleanField('能否交易期权', default=False, db_comment='能否交易期权')
+    option_trade_type = models.CharField('交易期权类型', max_length=50, blank=True, default='', db_comment='交易期权类型')
+    product = models.CharField('所属产品', max_length=50, blank=True, default='', db_comment='所属产品')
+    run_status = models.CharField('运行状态', max_length=20, blank=True, default='运行中', db_comment='运行状态')
+    suspend_date = models.DateField('暂停日期', blank=True, null=True, db_comment='暂停日期')
+    liquidation_pnl = models.DecimalField('清盘总盈亏', max_digits=18, decimal_places=2, blank=True, null=True, db_comment='清盘总盈亏')
+    invest_tag = models.CharField('投资标签', max_length=100, blank=True, default='', db_comment='投资标签')
+    invest_logic = models.CharField('投资逻辑', max_length=500, blank=True, default='', db_comment='投资逻辑')
+    remark = models.CharField('备注', max_length=500, blank=True, default='', db_comment='备注')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'mom_advisor_info'
+        db_table_comment = '产品运维-投顾信息台账'
+        unique_together = (('name', 'account_code'),)
+
+
+class AdvisorDividend(models.Model):
+    """产品运维 · 分红信息台账（人工维护）。"""
+
+    id = models.BigAutoField(primary_key=True)
+    dividend_date = models.DateField('分红日期', blank=True, null=True, db_comment='分红日期')
+    account_code = models.CharField('操作账户', max_length=100, blank=True, default='', db_comment='操作账户')
+    advisor_name = models.CharField('投顾名称', max_length=50, blank=True, default='', db_comment='投顾名称')
+    dividend_amount = models.DecimalField('分红金额', max_digits=18, decimal_places=2, blank=True, null=True, db_comment='分红金额')
+    withdraw_amount = models.DecimalField('出金金额', max_digits=18, decimal_places=2, blank=True, null=True, db_comment='出金金额')
+    product = models.CharField('所属产品', max_length=50, blank=True, default='', db_comment='所属产品')
+    remark = models.CharField('备注', max_length=500, blank=True, default='', db_comment='备注')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'mom_advisor_dividend'
+        db_table_comment = '产品运维-分红信息台账'
+        unique_together = (('dividend_date', 'account_code'),)

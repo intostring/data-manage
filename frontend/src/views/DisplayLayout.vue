@@ -147,6 +147,7 @@ import {
   ArrowLeftRight,
   ShieldCheck,
   LineChart,
+  Wrench,
 } from 'lucide-vue-next'
 import { useAdvisorStore } from '../stores/advisor'
 import { useAuthStore } from '../stores/auth'
@@ -216,6 +217,16 @@ const modules = [
       { name: 'display-strategy-portfolio', label: '策略组合', path: '/display/strategy/portfolio' },
     ],
   },
+  {
+    name: 'display-product-ops',
+    label: '产品运维',
+    path: '/display/product-ops',
+    icon: Wrench,
+    children: [
+      { name: 'display-advisor-info', label: '投顾信息', path: '/display/product-ops/advisor-info' },
+      { name: 'display-dividend-info', label: '分红信息', path: '/display/product-ops/dividend-info' },
+    ],
+  },
 ]
 
 const titleMap = {
@@ -240,6 +251,9 @@ const titleMap = {
   'display-strategy-portfolio': '策略组合',
   'display-strategy-portfolio-create': '创建组合',
   'display-strategy-portfolio-detail': '组合分析',
+  'display-product-ops': '产品运维',
+  'display-advisor-info': '投顾信息',
+  'display-dividend-info': '分红信息',
 }
 
 const currentTitle = computed(() => titleMap[route.name] || '分析展示')
