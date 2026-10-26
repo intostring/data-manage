@@ -5,12 +5,22 @@
         <div>
           <span class="d-card-t">投顾品种累计盈亏</span>
           <span class="d-card-x" style="margin-left:10px">
-            {{ advisorName }} · {{ varietyName }} · 单投顾累计盈亏
+            <template v-if="accountCount > 1">{{ rawAdvisorName }}（{{ accountCount }}个账号：<template v-for="(acc, i) in accounts" :key="acc"><router-link class="av-acc-link" :to="{ name: 'display-sector-advisor-variety', query: { account: acc, variety } }">{{ acc }}</router-link><span v-if="i < accounts.length - 1">、</span></template>）</template>
+            <template v-else>{{ advisorName }}</template>
+            · {{ varietyName }} · 单投顾累计盈亏
           </span>
         </div>
         <div class="av-query">
-          <input v-model="queryAccount" class="d-ipt" placeholder="投顾代码/名称" />
-          <input v-model="queryVariety" class="d-ipt" placeholder="品种代码/简称" />
+          <button
+            v-if="mergeable && accountCount <= 1"
+            type="button"
+            class="d-btn av-merge-btn"
+            @click="goMerged"
+          >
+            查看合并（{{ sameNameCount }}个同名账户）
+          </button>
+          <input v-model="queryAccount" name="advisor_account" class="d-ipt" placeholder="投顾代码/名称" />
+          <input v-model="queryVariety" name="variety_code" class="d-ipt" placeholder="品种代码/简称" />
           <button type="button" class="d-btn" @click="applyQuery">查询</button>
         </div>
       </div>
@@ -111,7 +121,11 @@
       <div class="d-card-h">
         <div>
           <span class="d-card-t">投顾品种成交记录</span>
-          <span class="d-card-x" style="margin-left:10px">{{ advisorName }} · {{ varietyName }} · 按成交时间倒序</span>
+          <span class="d-card-x" style="margin-left:10px">
+            <template v-if="accountCount > 1">{{ rawAdvisorName }}（{{ accountCount }}个账号：<template v-for="(acc, i) in accounts" :key="acc"><router-link class="av-acc-link" :to="{ name: 'display-sector-advisor-variety', query: { account: acc, variety } }">{{ acc }}</router-link><span v-if="i < accounts.length - 1">、</span></template>）</template>
+            <template v-else>{{ advisorName }}</template>
+            · {{ varietyName }} · 按成交时间倒序
+          </span>
         </div>
       </div>
       <div class="av-table-wrap">
@@ -128,6 +142,18 @@
             <tr v-for="row in tradeRows" :key="`${row.trade_date}-${row.trade_time}-${row.contract}-${row.trade_amount}`">
               <td class="d-mono">{{ row.trade_date || '—' }}</td>
               <td class="d-mono">{{ row.trade_time || '—' }}</td>
+              <!-- 合并模式下投顾代码可点击，进入该账户单独的品种明细页 -->
+              <td class="d-mono">
+                <router-link
+                  v-if="accountCount > 1 && row.account"
+                  class="av-acc-link"
+                  :to="{
+                    name: 'display-sector-advisor-variety',
+                    query: { account: row.account, variety: variety },
+                  }"
+                >{{ row.account }}</router-link>
+                <span v-else>{{ row.account || '—' }}</span>
+              </td>
               <td class="d-mono">
                 <router-link
                   v-if="row.contract"
@@ -164,6 +190,7 @@
           </select>
         </div>
         <div class="av-page-actions">
+          <button type="button" :disabled="tradePage === 1" @click="changeTradePage(1)">首页</button>
           <button type="button" :disabled="tradePage === 1" @click="changeTradePage(tradePage - 1)">上一页</button>
           <button
             v-for="page in tradePageNumbers"
@@ -175,6 +202,7 @@
             {{ page }}
           </button>
           <button type="button" :disabled="tradePage === totalTradePages" @click="changeTradePage(tradePage + 1)">下一页</button>
+          <button type="button" :disabled="tradePage === totalTradePages" @click="changeTradePage(totalTradePages)">尾页</button>
         </div>
         <div class="av-page-jump">
           <span>前往</span>
@@ -200,6 +228,11 @@ const variety = ref(route.query.variety || 'LH')
 const queryAccount = ref(account.value)
 const queryVariety = ref(variety.value)
 const advisorName = ref(account.value)
+const rawAdvisorName = ref(account.value)
+const mergeable = ref(false)
+const sameNameCount = ref(0)
+const accountCount = ref(1)
+const accounts = ref([])
 const varietyName = ref('生猪')
 const latestDate = ref('')
 const chartRows = ref([])
@@ -225,6 +258,7 @@ const barZero = computed(() =>
 const tradeColumns = [
   { key: 'trade_date', label: '成交日期' },
   { key: 'trade_time', label: '成交时间' },
+  { key: 'account', label: '投顾代码' },
   { key: 'contract', label: '合约' },
   { key: 'side', label: '买卖' },
   { key: 'open_close', label: '开平' },
@@ -376,9 +410,17 @@ function fmtMoney(value) {
 
 function applyQuery() {
   tradePage.value = 1
+  const query = { account: queryAccount.value.trim(), variety: queryVariety.value.trim() }
+  if (route.query.merge === '1') query.merge = 1
+  router.push({ name: 'display-sector-advisor-variety', query })
+}
+
+// 单账户页回到同名合并页
+function goMerged() {
+  tradePage.value = 1
   router.push({
     name: 'display-sector-advisor-variety',
-    query: { account: queryAccount.value.trim(), variety: queryVariety.value.trim() },
+    query: { account: rawAdvisorName.value, variety: variety.value, merge: 1 },
   })
 }
 
@@ -397,15 +439,20 @@ function goToTradePage() {
 async function loadData() {
   loading.value = true
   try {
-    const { data } = await client.get('/tables/sector/advisor-variety/', {
-      params: {
-        account: account.value,
-        variety: variety.value,
-        trade_page: tradePage.value,
-        trade_page_size: tradePageSize.value,
-      },
-    })
-    advisorName.value = data.advisor_name || account.value
+    const params = {
+      account: account.value,
+      variety: variety.value,
+      trade_page: tradePage.value,
+      trade_page_size: tradePageSize.value,
+    }
+    if (route.query.merge === '1') params.merge = 1
+    const { data } = await client.get('/tables/sector/advisor-variety/', { params })
+    rawAdvisorName.value = data.advisor_name || account.value
+    mergeable.value = !!data.mergeable
+    sameNameCount.value = data.same_name_accounts?.length || 0
+    accountCount.value = data.account_count || 1
+    accounts.value = data.accounts || []
+    advisorName.value = rawAdvisorName.value
     varietyName.value = data.variety_name || variety.value
     latestDate.value = data.latest_date || ''
     chartRows.value = data.chart_rows || []
@@ -646,6 +693,23 @@ onMounted(() => {
 
 .av-contract-link:hover {
   color: var(--brass);
+}
+
+/* 合并模式：成交记录投顾代码可点击进入单账户页 */
+.av-acc-link {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px dashed transparent;
+}
+
+.av-acc-link:hover {
+  color: var(--brass);
+  border-bottom-color: var(--brass);
+}
+
+/* 单账户页：查看合并入口 */
+.av-merge-btn {
+  white-space: nowrap;
 }
 
 .av-empty-cell {

@@ -190,6 +190,7 @@
           </select>
         </div>
         <div class="ck-page-actions">
+          <button type="button" :disabled="tradePage === 1" @click="changeTradePage(1)">首页</button>
           <button type="button" :disabled="tradePage === 1" @click="changeTradePage(tradePage - 1)">上一页</button>
           <button
             v-for="page in tradePageNumbers"
@@ -201,6 +202,7 @@
             {{ page }}
           </button>
           <button type="button" :disabled="tradePage === totalTradePages" @click="changeTradePage(tradePage + 1)">下一页</button>
+          <button type="button" :disabled="tradePage === totalTradePages" @click="changeTradePage(totalTradePages)">尾页</button>
         </div>
         <div class="ck-page-jump">
           <span>前往</span>

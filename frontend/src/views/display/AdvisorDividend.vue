@@ -89,6 +89,7 @@
             </select>
           </div>
           <div class="adv-page-actions">
+            <button type="button" :disabled="page === 1" @click="changePage(1)">首页</button>
             <button type="button" :disabled="page === 1" @click="changePage(page - 1)">上一页</button>
             <button
               v-for="p in pageNumbers"
@@ -98,6 +99,7 @@
               @click="changePage(p)"
             >{{ p }}</button>
             <button type="button" :disabled="page === totalPages" @click="changePage(page + 1)">下一页</button>
+            <button type="button" :disabled="page === totalPages" @click="changePage(totalPages)">尾页</button>
           </div>
           <div class="adv-page-jump">
             <span>前往</span>

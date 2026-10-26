@@ -19,6 +19,13 @@
       <button
         class="px-2 py-1 rounded border border-line text-ink-muted hover:bg-canvasDark disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         :disabled="page <= 1"
+        @click="go(1)"
+      >
+        首页
+      </button>
+      <button
+        class="px-2 py-1 rounded border border-line text-ink-muted hover:bg-canvasDark disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        :disabled="page <= 1"
         @click="go(page - 1)"
       >
         上一页
@@ -45,6 +52,13 @@
         @click="go(page + 1)"
       >
         下一页
+      </button>
+      <button
+        class="px-2 py-1 rounded border border-line text-ink-muted hover:bg-canvasDark disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        :disabled="page >= totalPages"
+        @click="go(totalPages)"
+      >
+        尾页
       </button>
     </div>
     <div class="flex items-center gap-2 text-ink-muted">

@@ -38,26 +38,17 @@
           <table class="d-table">
             <thead>
               <tr>
-                <th>姓名</th>
-                <th>操作账户</th>
-                <th>创建日期</th>
-                <th>所属产品</th>
-                <th>投资金额</th>
-                <th>最大保证金使用(%)</th>
-                <th>预警线</th>
-                <th>止损线</th>
-                <th>追保风险线</th>
-                <th>强平风险线</th>
-                <th>分红率(%)</th>
-                <th>能否交易期权</th>
-                <th>交易期权类型</th>
-                <th>运行状态</th>
-                <th>暂停日期</th>
-                <th>清盘总盈亏</th>
-                <th>投资标签</th>
-                <th>投资逻辑</th>
-                <th>备注</th>
-                <th>操作</th>
+                <th
+                  v-for="col in columns"
+                  :key="col.key"
+                  :class="{ 'ai-sort-th': col.sortable }"
+                  @click="col.sortable && toggleSort(col.key)"
+                >
+                  <span>{{ col.label }}</span>
+                  <span v-if="col.sortable" class="ai-sort-mark" :class="{ on: sortKey === col.key }">
+                    {{ sortKey === col.key ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}
+                  </span>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -113,6 +104,7 @@
             </select>
           </div>
           <div class="ai-page-actions">
+            <button type="button" :disabled="page === 1" @click="changePage(1)">首页</button>
             <button type="button" :disabled="page === 1" @click="changePage(page - 1)">上一页</button>
             <button
               v-for="p in pageNumbers"
@@ -122,6 +114,7 @@
               @click="changePage(p)"
             >{{ p }}</button>
             <button type="button" :disabled="page === totalPages" @click="changePage(page + 1)">下一页</button>
+            <button type="button" :disabled="page === totalPages" @click="changePage(totalPages)">尾页</button>
           </div>
           <div class="ai-page-jump">
             <span>前往</span>
@@ -205,6 +198,44 @@ const loading = ref(false)
 const error = ref('')
 const search = ref('')
 
+// 列定义（sortable 列与后端 ordering 白名单一致；can_trade_option 亦可在后端排序）
+const columns = [
+  { key: 'name', label: '姓名', sortable: true },
+  { key: 'account_code', label: '操作账户', sortable: true },
+  { key: 'create_date', label: '创建日期', sortable: true },
+  { key: 'product', label: '所属产品', sortable: true },
+  { key: 'invest_amount', label: '投资金额', sortable: true },
+  { key: 'max_margin_usage', label: '最大保证金使用(%)', sortable: true },
+  { key: 'warning_line', label: '预警线', sortable: false },
+  { key: 'stop_loss_line', label: '止损线', sortable: false },
+  { key: 'margin_call_risk', label: '追保风险线', sortable: false },
+  { key: 'force_close_risk', label: '强平风险线', sortable: false },
+  { key: 'dividend_rate', label: '分红率(%)', sortable: true },
+  { key: 'can_trade_option', label: '能否交易期权', sortable: false },
+  { key: 'option_trade_type', label: '交易期权类型', sortable: false },
+  { key: 'run_status', label: '运行状态', sortable: true },
+  { key: 'suspend_date', label: '暂停日期', sortable: true },
+  { key: 'liquidation_pnl', label: '清盘总盈亏', sortable: true },
+  { key: 'invest_tag', label: '投资标签', sortable: true },
+  { key: 'invest_logic', label: '投资逻辑', sortable: true },
+  { key: 'remark', label: '备注', sortable: false },
+  { key: '_ops', label: '操作', sortable: false },
+]
+
+// 排序（服务端）：点击列头切换方向
+const sortKey = ref('')
+const sortDir = ref('desc')
+function toggleSort(key) {
+  if (sortKey.value === key) {
+    sortDir.value = sortDir.value === 'desc' ? 'asc' : 'desc'
+  } else {
+    sortKey.value = key
+    sortDir.value = key === 'name' || key === 'account_code' ? 'asc' : 'desc'
+  }
+  page.value = 1
+  load()
+}
+
 // 分页（服务端分页）
 const page = ref(1)
 const pageSize = ref(20)
@@ -276,6 +307,7 @@ async function load() {
         page: page.value,
         page_size: pageSize.value,
         ...(search.value.trim() ? { search: search.value.trim() } : {}),
+        ...(sortKey.value ? { ordering: (sortDir.value === 'asc' ? '' : '-') + sortKey.value } : {}),
       },
     })
     rows.value = data.rows || []
@@ -512,6 +544,28 @@ onMounted(load)
 .ai-scroll {
   overflow-x: auto;
 }
+
+/* 可排序表头 */
+.ai-sort-th {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.ai-sort-th:hover {
+  color: var(--brass);
+}
+.ai-sort-mark {
+  margin-left: 3px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.5;
+}
+.ai-sort-mark.on {
+  opacity: 1;
+  color: var(--brass);
+}
+
 
 /* 等宽列：fixed 布局均分列宽，内容居中、自动换行 */
 .ai-scroll .d-table {

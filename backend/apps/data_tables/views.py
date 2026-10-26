@@ -1307,9 +1307,12 @@ def sector_advisor_variety(request):
     """单个投顾在单个品种上的累计盈亏与成交记录。
 
     account 支持投顾代码/名称模糊匹配，variety 支持品种代码/简称模糊匹配。
+    ?merge=1：同名投顾（account_name 相同）全部账号合并查询——
+    累计盈亏按日汇总多账号、成交记录合并展示（行内 account 标识所属账号）。
     """
     account = request.query_params.get('account', '250528_HG').strip()
     variety = request.query_params.get('variety', 'LH').strip()
+    merge = request.query_params.get('merge') == '1'
     trade_page = max(int(request.query_params.get('trade_page', 1) or 1), 1)
     trade_page_size = min(max(int(request.query_params.get('trade_page_size', 20) or 20), 1), 100)
     offset = (trade_page - 1) * trade_page_size
@@ -1336,6 +1339,24 @@ def sector_advisor_variety(request):
         else:
             advisor_name = account
 
+        # merge=1：取同名投顾全部账号；单账户模式也返回同名账号列表（前端显示"查看合并"入口）
+        accounts = [account]
+        if merge:
+            cursor.execute(
+                'SELECT account_id FROM mom_account_record WHERE account_name = %s ORDER BY account_id',
+                [advisor_name],
+            )
+            same_name = [r[0] for r in cursor.fetchall()]
+            if same_name:
+                accounts = same_name
+        else:
+            cursor.execute(
+                'SELECT account_id FROM mom_account_record WHERE account_name = %s ORDER BY account_id',
+                [advisor_name],
+            )
+            same_name = [r[0] for r in cursor.fetchall()]
+        account_ph = ','.join(['%s'] * len(accounts))
+
         # 品种：代码精确命中或代码/简称模糊匹配（用 fut_symbol_info 小表，避免扫大表）
         like_variety = f'%{variety}%'
         cursor.execute(
@@ -1357,7 +1378,7 @@ def sector_advisor_variety(request):
             variety_name = variety
 
         cursor.execute(
-            """
+            f"""
             SELECT
                 t.trade_date,
                 MAX(t.variety_code) AS variety_code,
@@ -1366,12 +1387,12 @@ def sector_advisor_variety(request):
                 SUM(COALESCE(t.profit_loss_value, 0)) AS daily_pnl
             FROM yl_perf_variety_pnl_trend t
             WHERE t.calc_window = 'std'
-              AND t.account = %s
+              AND t.account IN ({account_ph})
               AND t.variety_code = %s
             GROUP BY t.trade_date
             ORDER BY t.trade_date
             """,
-            [account, variety_code],
+            [*accounts, variety_code],
         )
         chart_rows = [
             {
@@ -1389,14 +1410,14 @@ def sector_advisor_variety(request):
         # 该投顾在该品种的每日持仓金额（多空合计）与单边敞口（轧差）
         # 先取出该账户在该品种的 pid，再用 pid 查持仓（避免 IN 子查询扫大表）
         cursor.execute(
-            """
+            f"""
             SELECT DISTINCT pid
             FROM yl_perf_variety_pnl_trend
             WHERE calc_window = 'std'
-              AND account = %s
+              AND account IN ({account_ph})
               AND variety_code = %s
             """,
-            [account, variety_code],
+            [*accounts, variety_code],
         )
         pids = [row[0] for row in cursor.fetchall()]
 
@@ -1429,17 +1450,17 @@ def sector_advisor_variety(request):
 
         contract_like = f'{selected_variety_code}%'
         cursor.execute(
-            """
+            f"""
             SELECT COUNT(*)
             FROM rh_trades
-            WHERE account = %s AND contract LIKE %s
+            WHERE account IN ({account_ph}) AND contract LIKE %s
             """,
-            [account, contract_like],
+            [*accounts, contract_like],
         )
         trade_count = cursor.fetchone()[0]
 
         cursor.execute(
-            """
+            f"""
             SELECT
                 trade_date,
                 trade_time,
@@ -1454,11 +1475,11 @@ def sector_advisor_variety(request):
                 close_profit,
                 daily_close_profit
             FROM rh_trades
-            WHERE account = %s AND contract LIKE %s
+            WHERE account IN ({account_ph}) AND contract LIKE %s
             ORDER BY trade_date DESC, trade_time DESC, id DESC
             LIMIT %s OFFSET %s
             """,
-            [account, contract_like, trade_page_size, offset],
+            [*accounts, contract_like, trade_page_size, offset],
         )
         trade_rows = [
             {
@@ -1480,6 +1501,11 @@ def sector_advisor_variety(request):
 
     return Response({
         'account': account,
+        'accounts': accounts,
+        'account_count': len(accounts),
+        'merged': merge and len(accounts) > 1,
+        'same_name_accounts': same_name,
+        'mergeable': len(same_name) > 1,
         'advisor_name': advisor_name,
         'variety': selected_variety_code,
         'variety_name': selected_variety_name,
@@ -1498,9 +1524,11 @@ def sector_pnl(request):
     """品种盈亏页面数据。
 
     默认使用 calc_window=std（成立以来）。
+    ?merge=1：投顾品种交易概况中同名投顾多账号合并为一行。
     """
     window = request.query_params.get('window', 'std')
     variety = request.query_params.get('variety', 'LH').strip()
+    merge_advisors = request.query_params.get('merge') == '1'
     allowed_windows = {'1m', '3m', '6m', '1y', 'ytd', 'std', 'custom'}
     if window not in allowed_windows:
         return Response({'detail': 'window 参数无效'}, status=400)
@@ -1643,7 +1671,8 @@ def sector_pnl(request):
                 s.loss_max,
                 s.margin_rate,
                 CASE WHEN COALESCE(tt.total_trade_amount, 0) > 0
-                     THEN s.trade_amount / tt.total_trade_amount ELSE NULL END AS trade_amount_ratio
+                     THEN s.trade_amount / tt.total_trade_amount ELSE NULL END AS trade_amount_ratio,
+                tt.total_trade_amount
             FROM yl_perf_trade_variety_stat s
             LEFT JOIN mom_account_record m ON m.account_id = s.account
             LEFT JOIN (
@@ -1669,6 +1698,7 @@ def sector_pnl(request):
         for row in cursor.fetchall():
             account = row[1]
             total_pnl, variety_pnl = pnl_by_account.get(account, (None, None))
+            # total_amount_raw / total_pnl_raw 供 merge 合并时重算占比，不对外输出
             detail_rows.append({
                 'advisor_name': row[0],
                 'advisor_code': account,
@@ -1692,7 +1722,16 @@ def sector_pnl(request):
                     if variety_pnl is not None and total_pnl not in (None, 0)
                     else None
                 ),
+                'total_amount_raw': float(row[16] or 0),
+                'total_pnl_raw': float(total_pnl) if total_pnl is not None else 0.0,
             })
+
+        if merge_advisors:
+            detail_rows = _merge_advisor_variety_rows(detail_rows)
+        for row in detail_rows:
+            row.pop('total_amount_raw', None)
+            row.pop('total_pnl_raw', None)
+        detail_rows.sort(key=lambda r: -(float(r.get('trade_amount') or 0)))
 
         latest_date = chart_rows[-1]['date'] if chart_rows else None
 
@@ -1706,6 +1745,74 @@ def sector_pnl(request):
         'chart_rows': chart_rows,
         'detail_rows': detail_rows,
     })
+
+
+def _merge_advisor_variety_rows(rows):
+    """投顾品种交易概况：同名投顾（advisor_name）多账号行合并为一行。
+
+    合并口径：
+    - 加和：品种盈亏、成交额、日均量/额
+    - 重算：占总交易比例 = Σ品种成交额/Σ总成交额；占投顾总盈利比例 = Σ品种盈亏/Σ总盈亏
+    - 加权（按成交额）：日内交易占比、换手率、胜率
+    - 简单平均：盈亏比、保证金收益率；极值：最大单笔盈利取 max、最大单笔亏损取 min
+    - has_position：任一账号有持仓即有
+    无投顾名（无账户记录）的行按账号独立成组，不参与合并。
+    """
+    from collections import defaultdict
+
+    def _wavg(pairs):
+        usable = [(v, w) for v, w in pairs if v is not None and w]
+        wsum = sum(w for _, w in usable)
+        if not usable or wsum <= 0:
+            return None
+        return sum(v * w for v, w in usable) / wsum
+
+    def _avg(values):
+        usable = [v for v in values if v is not None]
+        return sum(usable) / len(usable) if usable else None
+
+    groups = defaultdict(list)
+    for r in rows:
+        key = r['advisor_name'] if r['advisor_name'] and r['advisor_name'] != r['advisor_code'] else f"__acc__{r['advisor_code']}"
+        groups[key].append(r)
+
+    merged = []
+    for key, g in groups.items():
+        if len(g) == 1:
+            row = dict(g[0])
+            row['account_count'] = 1
+            merged.append(row)
+            continue
+        amounts = [float(r.get('trade_amount') or 0) for r in g]
+        sum_amount = sum(amounts)
+        sum_total_amount = sum(float(r.get('total_amount_raw') or 0) for r in g)
+        sum_variety_pnl = sum(float(r['profit_loss'] or 0) for r in g if r.get('profit_loss') is not None)
+        sum_total_pnl = sum(float(r.get('total_pnl_raw') or 0) for r in g)
+        max_profits = [r['max_profit'] for r in g if r.get('max_profit') is not None]
+        max_losses = [r['max_loss'] for r in g if r.get('max_loss') is not None]
+        merged.append({
+            'advisor_name': g[0]['advisor_name'],
+            'advisor_code': '、'.join(r['advisor_code'] for r in g),
+            'advisor_codes': [r['advisor_code'] for r in g],
+            'account_count': len(g),
+            'has_position': any(r.get('has_position') for r in g),
+            'symbol_code': g[0]['symbol_code'],
+            'symbol_name': g[0]['symbol_name'],
+            'profit_loss': sum_variety_pnl if sum_variety_pnl else None,
+            'trade_amount': sum_amount,
+            'avg_daily_volume': sum(float(r['avg_daily_volume'] or 0) for r in g) or None,
+            'avg_daily_amount': sum(float(r['avg_daily_amount'] or 0) for r in g) or None,
+            'intraday_trade_ratio': _wavg(list(zip((r['intraday_trade_ratio'] for r in g), amounts))),
+            'turnover_rate': _wavg(list(zip((r['turnover_rate'] for r in g), amounts))),
+            'win_rate': _wavg(list(zip((r['win_rate'] for r in g), amounts))),
+            'profit_loss_ratio': _avg([r['profit_loss_ratio'] for r in g]),
+            'max_profit': max(max_profits) if max_profits else None,
+            'max_loss': min(max_losses) if max_losses else None,
+            'margin_return_rate': _avg([r['margin_return_rate'] for r in g]),
+            'total_ratio': (sum_amount / sum_total_amount) if sum_total_amount > 0 else None,
+            'profit_ratio': (sum_variety_pnl / sum_total_pnl) if sum_total_pnl not in (0,) and sum_variety_pnl else None,
+        })
+    return merged
 
 
 @api_view(['GET'])
@@ -4053,16 +4160,51 @@ def _advisor_info_apply(m, payload):
     return m
 
 
+def _sync_invest_tag_to_accounts(m):
+    """投顾信息台账的「投资标签」同步到 mom_account_record.invest_cate（对应投顾）。
+
+    优先按操作账户（account_code→account_id）精确匹配；
+    操作账户为空或未命中时按同名（account_name）全部账号同步。
+    台账先于账户建档时无匹配行，静默跳过（返回 0，不阻断保存）。
+    """
+    from .models import MomAccountRecord
+
+    qs = MomAccountRecord.objects.all()
+    if m.account_code:
+        matched = qs.filter(account_id=m.account_code)
+        if not matched.exists():
+            matched = qs.filter(account_name=m.name)
+    else:
+        matched = qs.filter(account_name=m.name)
+    count = matched.update(invest_cate=(m.invest_tag or None))
+    # 投顾列表接口按 invest_cate 筛选且有缓存，同步后清掉避免 10 分钟内显示旧标签
+    if count:
+        from django.core.cache import cache
+        cache.delete_many(['advisor_perf_list_0', 'advisor_perf_list_1'])
+    return count
+
+
+# 投顾信息列表：可排序字段白名单（前端列 key 与模型字段同名）
+_ADVISOR_INFO_ORDER_FIELDS = {
+    'name', 'account_code', 'create_date', 'product', 'invest_amount',
+    'max_margin_usage', 'warning_line', 'stop_loss_line', 'margin_call_risk',
+    'force_close_risk', 'dividend_rate', 'run_status', 'suspend_date',
+    'liquidation_pnl', 'invest_tag', 'invest_logic',
+}
+
+
 @api_view(['GET', 'POST'])
 @permission_classes([AllowAny])
 def advisor_info_records(request):
-    """投顾信息台账：GET 列表（?search= 按姓名/账户/产品模糊），POST 新建（需登录）。"""
+    """投顾信息台账：GET 列表（?search= 按姓名/账户/产品模糊），POST 新建（需登录）。
+
+    排序：ordering=字段名（-前缀降序，白名单 _ADVISOR_INFO_ORDER_FIELDS 内）。
+    """
     from .models import AdvisorInfo
 
     if request.method == 'GET':
-        qs = AdvisorInfo.objects.all().order_by(
-            F('create_date').desc(nulls_last=True), '-id'
-        )
+        qs = AdvisorInfo.objects.all()
+
         search = request.query_params.get('search', '').strip()
         if search:
             qs = qs.filter(
@@ -4070,6 +4212,18 @@ def advisor_info_records(request):
                 | Q(account_code__icontains=search)
                 | Q(product__icontains=search)
             )
+
+        ordering = request.query_params.get('ordering', '').strip()
+        if ordering:
+            desc = ordering.startswith('-')
+            field = ordering.lstrip('-')
+            if field in _ADVISOR_INFO_ORDER_FIELDS:
+                expr = F(field).desc(nulls_last=True) if desc else F(field).asc(nulls_last=True)
+                qs = qs.order_by(expr, '-id')
+            else:
+                qs = qs.order_by(F('create_date').desc(nulls_last=True), '-id')
+        else:
+            qs = qs.order_by(F('create_date').desc(nulls_last=True), '-id')
         # 分页：page 从 1 起，page_size 默认 20、上限 200
         try:
             page = max(int(request.query_params.get('page', 1)), 1)
@@ -4095,7 +4249,10 @@ def advisor_info_records(request):
         if 'Duplicate' in str(e) or 'unique' in str(e).lower():
             return Response({'detail': '该「姓名+操作账户」已存在'}, status=400)
         raise
-    return Response(_advisor_info_dto(m), status=201)
+    synced = _sync_invest_tag_to_accounts(m)
+    payload = _advisor_info_dto(m)
+    payload['synced_accounts'] = synced
+    return Response(payload, status=201)
 
 
 @api_view(['PUT', 'DELETE'])
@@ -4120,7 +4277,10 @@ def advisor_info_record_detail(request, pk):
         if 'Duplicate' in str(e) or 'unique' in str(e).lower():
             return Response({'detail': '该「姓名+操作账户」已存在'}, status=400)
         raise
-    return Response(_advisor_info_dto(m))
+    synced = _sync_invest_tag_to_accounts(m)
+    payload = _advisor_info_dto(m)
+    payload['synced_accounts'] = synced
+    return Response(payload)
 
 
 # ==================== 产品运维 · 分红信息台账 ====================

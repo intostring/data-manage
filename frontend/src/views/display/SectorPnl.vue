@@ -133,14 +133,24 @@
           <span class="d-card-t">投顾品种交易概况</span>
           <span class="d-card-x" style="margin-left:10px">{{ selectedVarietyName }} · {{ selectedWindowLabel }} · 按交易品种成交额从高到低排序</span>
         </div>
-        <button
-          type="button"
-          class="sector-filter-btn"
-          :class="{ on: onlyHolding }"
-          @click="onlyHolding = !onlyHolding"
-        >
-          当前有持仓
-        </button>
+        <div class="sector-card-actions">
+          <button
+            type="button"
+            class="sector-filter-btn"
+            :class="{ on: mergeAdvisors }"
+            @click="mergeAdvisors = !mergeAdvisors"
+          >
+            合并同名投顾
+          </button>
+          <button
+            type="button"
+            class="sector-filter-btn"
+            :class="{ on: onlyHolding }"
+            @click="onlyHolding = !onlyHolding"
+          >
+            当前有持仓
+          </button>
+        </div>
       </div>
       <div class="sector-table-wrap">
         <table class="d-table sector-table">
@@ -198,11 +208,14 @@
                   class="sector-advisor-link"
                   :to="{
                     name: 'display-sector-advisor-variety',
-                    query: { account: row.advisor_code, variety: row.symbol_code },
+                    query: mergeAdvisors
+                      ? { account: row.advisor_name, variety: row.symbol_code, merge: 1 }
+                      : { account: row.advisor_code, variety: row.symbol_code },
                   }"
                 >
                   <span>{{ row.advisor_name || '—' }}</span>
-                  <small v-if="row.advisor_code">（{{ row.advisor_code }}）</small>
+                  <small v-if="mergeAdvisors && row.account_count > 1">（{{ row.account_count }}个账号）</small>
+                  <small v-else-if="row.advisor_code">（{{ row.advisor_code }}）</small>
                 </router-link>
               </td>
               <td>{{ row.symbol_name || '—' }}</td>
@@ -241,6 +254,7 @@
           </select>
         </div>
         <div class="sector-page-actions">
+          <button type="button" :disabled="currentPage === 1" @click="currentPage = 1">首页</button>
           <button type="button" :disabled="currentPage === 1" @click="currentPage -= 1">上一页</button>
           <button
             v-for="page in pageNumbers"
@@ -252,6 +266,7 @@
             {{ page }}
           </button>
           <button type="button" :disabled="currentPage === totalPages" @click="currentPage += 1">下一页</button>
+          <button type="button" :disabled="currentPage === totalPages" @click="currentPage = totalPages">尾页</button>
         </div>
         <div class="sector-page-jump">
           <span>前往</span>
@@ -277,6 +292,7 @@ const latestDate = ref('')
 const loading = ref(false)
 const hoverIndex = ref(null)
 const onlyHolding = ref(false)
+const mergeAdvisors = ref(false)
 const showPosition = ref(true)
 const showNet = ref(true)
 const selectedWindow = ref('std')
@@ -604,6 +620,7 @@ async function fetchSectorPnl() {
   loading.value = true
   try {
     const params = { window: selectedWindow.value, variety: selectedVariety.value }
+    if (mergeAdvisors.value) params.merge = 1
     if (selectedWindow.value === 'custom') {
       params.start_date = customStartDate.value
       params.end_date = customEndDate.value
@@ -638,6 +655,11 @@ watch(() => route.query.variety, (code) => {
 
 watch(onlyHolding, () => {
   currentPage.value = 1
+})
+
+watch(mergeAdvisors, () => {
+  currentPage.value = 1
+  fetchSectorPnl()
 })
 
 watch(varietyOptions, (options) => {

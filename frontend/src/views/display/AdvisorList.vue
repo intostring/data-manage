@@ -78,7 +78,7 @@
               </thead>
               <tbody>
                 <tr
-                  v-for="row in sortedRows"
+                  v-for="row in pagedRows"
                   :key="row.pid"
                   class="al-row"
                   @click="goDetail(row)"
@@ -108,6 +108,38 @@
               </tbody>
             </table>
           </div>
+          <!-- 分页 -->
+          <div v-if="sortedRows.length" class="al-pager">
+            <div class="al-page-size">
+              <span>共 {{ sortedRows.length }} 条</span>
+              <span>每页</span>
+              <select v-model.number="pageSize" name="page_size" @change="page = 1">
+                <option :value="10">10 条</option>
+                <option :value="20">20 条</option>
+                <option :value="50">50 条</option>
+                <option :value="100">100 条</option>
+              </select>
+            </div>
+            <div class="al-page-actions">
+              <button type="button" :disabled="page === 1" @click="page = 1">首页</button>
+              <button type="button" :disabled="page === 1" @click="page -= 1">上一页</button>
+              <button
+                v-for="p in pageNumbers"
+                :key="p"
+                type="button"
+                :class="{ on: page === p }"
+                @click="page = p"
+              >{{ p }}</button>
+              <button type="button" :disabled="page === totalPages" @click="page += 1">下一页</button>
+              <button type="button" :disabled="page === totalPages" @click="page = totalPages">尾页</button>
+            </div>
+            <div class="al-page-jump">
+              <span>前往</span>
+              <input v-model="jumpPage" name="jump_page" type="number" min="1" :max="totalPages" @keydown.enter="goToPage" />
+              <span>页</span>
+              <button type="button" @click="goToPage">go</button>
+            </div>
+          </div>
           <div class="d-muted" style="font-size:11px;margin-top:10px">
             口径说明：总收益为成立以来收益；平均仓位为成立以来保证金占用率（Σ保证金 / 结算权益 的日均值）；
             年化收益/夏普/卡玛/年化波动/最大回撤取成立以来口径（合并模式下指标由 rh_funds 市值+出入金份额法净值推导，夏普无风险利率取 1.5%）。
@@ -119,7 +151,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import client from '../../api/client'
 
@@ -223,6 +255,33 @@ function toggleSort(key) {
     sortDir.value = key === 'max_drawdown' ? 'asc' : 'desc'
   }
 }
+
+// 分页（前端分页：数据一次拉取，筛选/排序后分页展示）
+const page = ref(1)
+const pageSize = ref(20)
+const jumpPage = ref('')
+const totalPages = computed(() => Math.max(Math.ceil(sortedRows.value.length / pageSize.value), 1))
+const pagedRows = computed(() => {
+  const start = (page.value - 1) * pageSize.value
+  return sortedRows.value.slice(start, start + pageSize.value)
+})
+const pageNumbers = computed(() => {
+  const t = totalPages.value
+  const current = page.value
+  const start = Math.max(1, Math.min(current - 2, t - 4))
+  const end = Math.min(t, start + 4)
+  return Array.from({ length: end - start + 1 }, (_, i) => start + i)
+})
+function goToPage() {
+  const p = Number(jumpPage.value)
+  if (!p || p < 1 || p > totalPages.value) return
+  jumpPage.value = ''
+  page.value = p
+}
+
+// 筛选/搜索/排序/合并模式变化后回到第 1 页；页码越界自动收缩
+watch(sortedRows, () => { page.value = 1 })
+watch(totalPages, (t) => { if (page.value > t) page.value = t })
 
 function sortArrow(key) {
   if (sortKey.value !== key) return '⇅'
@@ -390,5 +449,85 @@ onMounted(fetchList)
   font-size: 10.5px;
   color: var(--muted);
   margin-left: 8px;
+}
+
+/* 分页条 */
+.al-pager {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.al-page-size,
+.al-page-jump {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.al-page-jump { justify-content: flex-end; }
+
+.al-page-size select,
+.al-page-jump input {
+  height: 30px;
+  border: 1px solid var(--line, #E5E0D2);
+  border-radius: 7px;
+  background: var(--card, #FFFDF8);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.al-page-size select { padding: 0 24px 0 10px; }
+
+.al-page-jump input {
+  width: 60px;
+  padding: 0 8px;
+  text-align: center;
+}
+
+.al-page-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.al-page-actions button,
+.al-page-jump button {
+  min-width: 30px;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--line, #E5E0D2);
+  border-radius: 7px;
+  background: var(--card, #FFFDF8);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.al-page-actions button:hover:not(:disabled),
+.al-page-jump button:hover {
+  border-color: #C9A268;
+  color: #9C6B2F;
+}
+
+.al-page-actions button.on {
+  border-color: #9C6B2F;
+  background: #9C6B2F;
+  color: #FFFDF8;
+}
+
+.al-page-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+@media (max-width: 900px) {
+  .al-pager { grid-template-columns: 1fr; }
+  .al-page-actions,
+  .al-page-jump { justify-content: flex-start; }
 }
 </style>
