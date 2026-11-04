@@ -951,12 +951,21 @@ def advisor_performance(request):
     indicators = {}
     if len(navs) >= 2:
         bench_rets = _load_nhci_returns()
+        first_date = navs[0][0]
         last_date = navs[-1][0]
+        span_days = (last_date - first_date).days + 1
         windows = {'since': navs}
+        # 数据不足对应窗口年限时，该窗口指标置 None（前端显示 —），不截短回退
         for label, days_back in (('1y', 365), ('2y', 730), ('3y', 1095)):
-            cutoff = last_date - timedelta(days=days_back)
-            windows[label] = [x for x in navs if x[0] >= cutoff] or navs[-1:]
-        window_metrics = {label: _nav_window_metrics(seq, bench_rets) for label, seq in windows.items()}
+            if span_days >= days_back:
+                cutoff = last_date - timedelta(days=days_back)
+                windows[label] = [x for x in navs if x[0] >= cutoff] or navs[-1:]
+            else:
+                windows[label] = None
+        window_metrics = {
+            label: (_nav_window_metrics(seq, bench_rets) if seq else {k: None for k in risk_metrics})
+            for label, seq in windows.items()
+        }
         risk_table = {
             metric: {p: window_metrics[p][metric] for p in risk_periods}
             for metric in risk_metrics

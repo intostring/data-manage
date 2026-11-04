@@ -1,8 +1,8 @@
 <template>
   <div class="ato-page">
-    <div class="mb-5">
+    <div class="mb-1.5">
       <h2 class="text-lg font-semibold text-ink">投顾交易概况</h2>
-      <p class="text-sm text-ink-muted mt-1">主观投顾 × 品种交易矩阵，按板块大类/子类分组，展示保证金占比</p>
+      <p class="text-xs text-ink-muted mt-0.5">主观投顾 × 品种交易矩阵，按板块大类/子类分组，展示保证金占比</p>
     </div>
 
     <section class="d-card">
@@ -387,6 +387,8 @@ onMounted(fetchData)
 <style scoped>
 .ato-page {
   max-width: 100%;
+  /* 吸收内容区底部留白，使矩阵恰好填满视口、页面本身不滚动 */
+  margin-bottom: -52px;
 }
 
 .ato-tools {
@@ -535,7 +537,8 @@ th.ato-sort:hover {
 
 /* ---------- 双表布局：左固定块 + 右滚动矩阵 ---------- */
 .ato-scroll {
-  max-height: calc(100vh - 220px);
+  /* 视口减去：顶部24 + 标题~46 + 卡头46 + 筛选栏48 + 底部余量18 */
+  max-height: calc(100vh - 182px);
   overflow: auto;
   border-radius: 0 0 6px 6px;
 }
@@ -577,7 +580,7 @@ th.ato-sort:hover {
 
 /* 行高严格一致，保证左右两表逐行对齐 */
 .ato-tbl tbody tr {
-  height: 30px;
+  height: 27px;
 }
 
 /* 左表表头：单行撑满 4 层表头的高度 */
