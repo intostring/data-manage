@@ -40,6 +40,7 @@ const routes = [
       { path: 'product-ops', name: 'display-product-ops', component: () => import('./views/display/ProductOps.vue') },
       { path: 'product-ops/advisor-info', name: 'display-advisor-info', component: () => import('./views/display/AdvisorInfo.vue') },
       { path: 'product-ops/dividend-info', name: 'display-dividend-info', component: () => import('./views/display/AdvisorDividend.vue') },
+      { path: 'product-ops/counter-account', name: 'display-counter-account', component: () => import('./views/display/CounterAccount.vue') },
       { path: '', redirect: { name: 'display-overview' } },
     ],
   },

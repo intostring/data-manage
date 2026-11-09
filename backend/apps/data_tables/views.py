@@ -4147,7 +4147,7 @@ def _advisor_info_apply(m, payload):
         return d if d else v
 
     m.name = name
-    m.account_code = str(payload.get('account_code') or '').strip()
+    m.account_code = str(payload.get('account_code') or '').strip() or None
     m.invest_amount = _dec('invest_amount')
     m.max_margin_usage = _dec('max_margin_usage')
     m.warning_line = _dec('warning_line')
@@ -4165,6 +4165,11 @@ def _advisor_info_apply(m, payload):
     m.invest_tag = str(payload.get('invest_tag') or '').strip()
     m.invest_logic = str(payload.get('invest_logic') or '').strip()
     m.remark = str(payload.get('remark') or '').strip()
+    # 派生口径：追保风险线 = 投资金额 × 预警线；强平风险线 = 投资金额 × 止损线
+    if m.invest_amount is not None and m.warning_line is not None:
+        m.margin_call_risk = (m.invest_amount * m.warning_line).quantize(_decimal.Decimal('0.01'))
+    if m.invest_amount is not None and m.stop_loss_line is not None:
+        m.force_close_risk = (m.invest_amount * m.stop_loss_line).quantize(_decimal.Decimal('0.01'))
     m.save()
     return m
 
@@ -4256,7 +4261,7 @@ def advisor_info_records(request):
         return Response({'detail': str(e)}, status=400)
     except Exception as e:
         if 'Duplicate' in str(e) or 'unique' in str(e).lower():
-            return Response({'detail': '该「姓名+操作账户」已存在'}, status=400)
+            return Response({'detail': '该操作账户已存在'}, status=400)
         raise
     synced = _sync_invest_tag_to_accounts(m)
     payload = _advisor_info_dto(m)
@@ -4284,7 +4289,7 @@ def advisor_info_record_detail(request, pk):
         return Response({'detail': str(e)}, status=400)
     except Exception as e:
         if 'Duplicate' in str(e) or 'unique' in str(e).lower():
-            return Response({'detail': '该「姓名+操作账户」已存在'}, status=400)
+            return Response({'detail': '该操作账户已存在'}, status=400)
         raise
     synced = _sync_invest_tag_to_accounts(m)
     payload = _advisor_info_dto(m)
@@ -4334,6 +4339,247 @@ def _parse_date_str(v):
         return None
     d = parse_date(v)
     return d if d else v
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def advisor_info_lookup(request):
+    """按操作账户查投顾名称与所属产品（分红信息自动填充用）。
+
+    优先 mom_account_record（account_id 精确匹配），回退投顾信息台账 mom_advisor_info。
+    """
+    from .models import AdvisorInfo, MomAccountRecord
+
+    code = (request.query_params.get('account_code') or '').strip()
+    if not code:
+        return Response({'found': False})
+
+    m = MomAccountRecord.objects.filter(account_id=code).first()
+    if m:
+        return Response({
+            'found': True,
+            'source': 'mom_account_record',
+            'advisor_name': m.account_name or '',
+            'product': m.product_name or '',
+        })
+
+    a = AdvisorInfo.objects.filter(account_code=code).first()
+    if a:
+        return Response({
+            'found': True,
+            'source': 'mom_advisor_info',
+            'advisor_name': a.name or '',
+            'product': a.product or '',
+        })
+    return Response({'found': False})
+
+
+def _mom_fill_fields(m):
+    """mom_account_record → 台账可回填字段映射（空值返回 None，由调用方判断是否覆盖）。"""
+    return {
+        'invest_amount': float(m.cum_investment) if m.cum_investment is not None else None,
+        'max_margin_usage': float(m.max_pos_rate) if m.max_pos_rate is not None else None,
+        'stop_loss_line': float(m.stop_loss_rate) if m.stop_loss_rate is not None else None,
+        'dividend_rate': float(m.perf_fee) if m.perf_fee is not None else None,
+        'product': (m.product_name or '').strip() or None,
+        'invest_tag': (m.invest_cate or '').strip() or None,
+        'invest_logic': (m.invest_logic or '').strip() or None,
+        'create_date': parse_date(str(m.create_time).strip()[:10]) if m.create_time else None,
+    }
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def advisor_info_sync(request):
+    """从 rh_advisors / mom_account_record 同步投顾信息台账（需登录）。
+
+    1) rh_advisors 新账户 → 新增台账行（姓名/产品来自 rh_advisors，其余字段带出 mom_account_record）；
+    2) 台账已有投顾命中 mom_account_record → 仅回填空白字段（投资金额/最大保证金使用/止损线/
+       分红率/所属产品/投资标签/投资逻辑/创建日期），不覆盖人工维护数据。
+    """
+    from .models import AdvisorInfo, MomAccountRecord
+
+    if not (request.user and request.user.is_authenticated):
+        return Response({'detail': '登录后才能同步'}, status=401)
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT r.account, MAX(r.account_holder), MAX(r.product_name)
+            FROM rh_advisors r
+            WHERE r.account IS NOT NULL AND r.account <> ''
+            GROUP BY r.account
+            """
+        )
+        rh_rows = cursor.fetchall()
+
+    existing = {a.account_code: a for a in AdvisorInfo.objects.all()}
+    mom_map = {m.account_id: m for m in MomAccountRecord.objects.all()}
+
+    # 1) 新增 rh_advisors 新账户
+    added = []
+    for code, holder, product in rh_rows:
+        code = str(code or '').strip()
+        if not code or code in existing:
+            continue
+        m = mom_map.get(code)
+        name = str(holder or '').strip() or (m.account_name if m else '') or code
+        fills = _mom_fill_fields(m) if m else {}
+        prod = str(product or '').strip() or fills.get('product') or ''
+        try:
+            obj = AdvisorInfo.objects.create(
+                name=name,
+                account_code=code,
+                product=prod,
+                invest_amount=fills.get('invest_amount'),
+                max_margin_usage=fills.get('max_margin_usage'),
+                stop_loss_line=fills.get('stop_loss_line'),
+                dividend_rate=fills.get('dividend_rate'),
+                invest_tag=fills.get('invest_tag') or '',
+                invest_logic=fills.get('invest_logic') or '',
+                create_date=fills.get('create_date'),
+                run_status='运行中',
+            )
+            added.append({'account_code': code, 'name': name})
+            existing[code] = obj
+        except Exception:
+            continue
+
+    # 2) 已有投顾按 mom_account_record 补空白字段
+    FIELD_LABELS = {
+        'invest_amount': '投资金额', 'max_margin_usage': '最大保证金使用',
+        'stop_loss_line': '止损线', 'dividend_rate': '分红率',
+        'product': '所属产品', 'invest_tag': '投资标签',
+        'invest_logic': '投资逻辑', 'create_date': '创建日期',
+    }
+    updated = []
+    for code, info in existing.items():
+        m = mom_map.get(code)
+        if not m:
+            continue
+        fills = _mom_fill_fields(m)
+        changed_fields = []
+        for field, val in fills.items():
+            if val is None:
+                continue
+            cur = getattr(info, field, None)
+            if cur is None or cur == '':
+                setattr(info, field, val)
+                changed_fields.append(FIELD_LABELS[field])
+        if changed_fields:
+            try:
+                info.save()
+                updated.append({
+                    'account_code': code,
+                    'name': info.name,
+                    'fields': changed_fields,
+                })
+            except Exception:
+                continue
+
+    return Response({
+        'added': added,
+        'added_count': len(added),
+        'updated': updated,
+        'updated_count': len(updated),
+    })
+
+
+# ==================== 产品运维 · 柜台账户（mom_fund_status 只读） ====================
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def counter_account(request):
+    """柜台账户快照（mom_fund_status，只读）。
+
+    ?date=YYYY-MM-DD 默认最新交易日；?account=保证金账户 过滤；?search= 客户/公司/账户模糊。
+    """
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT MAX(trade_date), MIN(trade_date) FROM mom_fund_status')
+        latest_date, min_date = cursor.fetchone()
+        if not latest_date:
+            return Response({'trade_date': None, 'rows': [], 'accounts': [], 'latest_date': None})
+
+        date_param = request.query_params.get('date', '').strip()
+        d = parse_date(date_param) if date_param else latest_date
+        if not d:
+            return Response({'detail': 'date 参数无效'}, status=400)
+
+        account = request.query_params.get('account', '').strip()
+        search = request.query_params.get('search', '').strip()
+
+        sql = """
+            SELECT trade_date, margin_account, futures_account, customer_name, broker_name,
+                   prev_balance, customer_equity, deposit_withdraw, currency_funds, day_pl,
+                   non_monetary_pledge, total_premium, monetary_pledge, fee, frozen,
+                   balance, margin_occupied, floating_pl, available, risk_degree, margin_call
+            FROM mom_fund_status
+            WHERE trade_date = %s
+        """
+        params = [d]
+        if account:
+            sql += ' AND margin_account = %s'
+            params.append(account)
+        if search:
+            sql += ' AND (customer_name LIKE %s OR broker_name LIKE %s OR margin_account LIKE %s OR futures_account LIKE %s)'
+            kw = f'%{search}%'
+            params.extend([kw, kw, kw, kw])
+        sql += ' ORDER BY customer_equity DESC'
+
+        cursor.execute(sql, params)
+        rows = [
+            {
+                'trade_date': r[0].isoformat() if r[0] else None,
+                'margin_account': r[1],
+                'futures_account': r[2],
+                'customer_name': r[3],
+                'broker_name': r[4],
+                'prev_balance': float(r[5]) if r[5] is not None else None,
+                'customer_equity': float(r[6]) if r[6] is not None else None,
+                'deposit_withdraw': float(r[7]) if r[7] is not None else None,
+                'currency_funds': float(r[8]) if r[8] is not None else None,
+                'day_pl': float(r[9]) if r[9] is not None else None,
+                'non_monetary_pledge': float(r[10]) if r[10] is not None else None,
+                'total_premium': float(r[11]) if r[11] is not None else None,
+                'monetary_pledge': float(r[12]) if r[12] is not None else None,
+                'fee': float(r[13]) if r[13] is not None else None,
+                'frozen': float(r[14]) if r[14] is not None else None,
+                'balance': float(r[15]) if r[15] is not None else None,
+                'margin_occupied': float(r[16]) if r[16] is not None else None,
+                'floating_pl': float(r[17]) if r[17] is not None else None,
+                'available': float(r[18]) if r[18] is not None else None,
+                'risk_degree': float(r[19]) if r[19] is not None else None,
+                'margin_call': float(r[20]) if r[20] is not None else None,
+            }
+            for r in cursor.fetchall()
+        ]
+
+        # 账户清单（供筛选下拉）
+        cursor.execute(
+            """
+            SELECT margin_account, futures_account, broker_name, customer_name, MAX(trade_date)
+            FROM mom_fund_status
+            GROUP BY 1, 2, 3, 4
+            ORDER BY broker_name
+            """
+        )
+        accounts = [
+            {
+                'margin_account': a[0],
+                'futures_account': a[1],
+                'broker_name': a[2],
+                'customer_name': a[3],
+            }
+            for a in cursor.fetchall()
+        ]
+
+        return Response({
+            'trade_date': d.isoformat(),
+            'latest_date': latest_date.isoformat(),
+            'min_date': min_date.isoformat() if min_date else None,
+            'rows': rows,
+            'accounts': accounts,
+        })
 
 
 @api_view(['GET', 'POST'])

@@ -225,6 +225,7 @@ const modules = [
     children: [
       { name: 'display-advisor-info', label: '投顾信息', path: '/display/product-ops/advisor-info' },
       { name: 'display-dividend-info', label: '分红信息', path: '/display/product-ops/dividend-info' },
+      { name: 'display-counter-account', label: '柜台账户', path: '/display/product-ops/counter-account' },
     ],
   },
 ]
@@ -254,6 +255,7 @@ const titleMap = {
   'display-product-ops': '产品运维',
   'display-advisor-info': '投顾信息',
   'display-dividend-info': '分红信息',
+  'display-counter-account': '柜台账户',
 }
 
 const currentTitle = computed(() => titleMap[route.name] || '分析展示')

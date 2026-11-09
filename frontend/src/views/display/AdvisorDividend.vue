@@ -122,7 +122,10 @@
           <div class="adv-form">
             <label class="adv-fld"><span>分红日期</span><input v-model="form.dividend_date" type="date" class="d-ipt" /></label>
             <label class="adv-fld"><span>操作账户</span><input v-model.trim="form.account_code" class="d-ipt" placeholder="如 YL009、260416_JH" /></label>
-            <label class="adv-fld"><span>投顾名称</span><input v-model.trim="form.advisor_name" class="d-ipt" placeholder="投顾姓名" /></label>
+            <label class="adv-fld">
+              <span>投顾名称</span>
+              <input v-model.trim="form.advisor_name" class="d-ipt" :placeholder="autoFillHint || '投顾姓名'" :class="{ 'adv-autofilled': autoFillHint }" />
+            </label>
             <label class="adv-fld"><span>分红金额（元）</span><input v-model.number="form.dividend_amount" type="number" class="d-ipt" placeholder="分红金额" /></label>
             <label class="adv-fld"><span>出金金额（元）</span><input v-model.number="form.withdraw_amount" type="number" class="d-ipt" placeholder="出金金额" /></label>
             <label class="adv-fld"><span>所属产品</span><input v-model.trim="form.product" class="d-ipt" placeholder="所属产品" /></label>
@@ -254,7 +257,37 @@ function openEdit(r) {
 
 function closeModal() {
   showModal.value = false
+  autoFillHint.value = ''
 }
+
+// ---------- 操作账户 → 自动填充投顾名称 / 所属产品 ----------
+
+const autoFillHint = ref('')
+let lookupTimer = null
+watch(
+  () => form.value.account_code,
+  (code) => {
+    autoFillHint.value = ''
+    clearTimeout(lookupTimer)
+    if (!showModal.value || !code) return
+    lookupTimer = setTimeout(async () => {
+      try {
+        const { data } = await client.get('/tables/product-ops/advisor-lookup/', {
+          params: { account_code: code },
+        })
+        if (!data.found) {
+          autoFillHint.value = '未匹配到该账户'
+          return
+        }
+        if (!form.value.advisor_name && data.advisor_name) form.value.advisor_name = data.advisor_name
+        if (!form.value.product && data.product) form.value.product = data.product
+        autoFillHint.value = '已自动填充'
+      } catch {
+        /* 查询失败静默，不影响手工录入 */
+      }
+    }, 300)
+  }
+)
 
 async function save() {
   saving.value = true
@@ -610,5 +643,8 @@ onMounted(load)
   color: #B03A2E;
   font-size: 12px;
   margin-top: 10px;
+}
+.adv-autofilled::placeholder {
+  color: #9C6B2F;
 }
 </style>

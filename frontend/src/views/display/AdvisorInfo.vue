@@ -13,6 +13,7 @@
             <button class="d-btn" @click="pickImport">导入</button>
             <input ref="importInput" type="file" accept=".xlsx" style="display:none" @change="onImportChange" />
             <button class="d-btn" @click="exportRows">导出</button>
+            <button class="d-btn" :disabled="syncing" @click="syncFromRh">{{ syncing ? '同步中…' : '同步新投顾' }}</button>
             <button class="d-btn" @click="openCreate">新增投顾</button>
           </template>
         </div>
@@ -26,6 +27,18 @@
           <span>导入完成：新增 {{ importResult.created }} 条 · 更新 {{ importResult.updated }} 条 · 跳过 {{ importResult.skipped }} 条</span>
           <div v-for="e in importResult.errors" :key="e" style="margin-top:2px">{{ e }}</div>
           <a class="ai-modal-x" style="font-size:14px" @click="importResult = null">×</a>
+        </div>
+
+        <div v-if="syncResult" class="ai-import-result">
+          <span>
+            同步完成：新增 {{ syncResult.added_count }} 条账户<template v-if="syncResult.added.length">（{{ syncResult.added.map(a => a.account_code + ' ' + a.name).join('、') }}）</template>
+            · 补全 {{ syncResult.updated_count }} 条缺失字段
+          </span>
+          <div v-for="u in syncResult.updated.slice(0, 15)" :key="u.account_code" style="margin-top:2px">
+            {{ u.name }}（{{ u.account_code }}）：补 {{ u.fields.join('、') }}
+          </div>
+          <div v-if="syncResult.updated.length > 15" style="margin-top:2px">…等共 {{ syncResult.updated.length }} 条</div>
+          <a class="ai-modal-x" style="font-size:14px" @click="syncResult = null">×</a>
         </div>
 
         <div v-if="loading" style="display:flex;align-items:center;justify-content:center;height:200px">
@@ -143,8 +156,14 @@
             <label class="ai-fld"><span>最大保证金使用（%）</span><input v-model.number="form.max_margin_usage" type="number" class="d-ipt" placeholder="如 30" /></label>
             <label class="ai-fld"><span>预警线</span><input v-model.number="form.warning_line" type="number" class="d-ipt" placeholder="如 0.85" /></label>
             <label class="ai-fld"><span>止损线</span><input v-model.number="form.stop_loss_line" type="number" class="d-ipt" placeholder="如 0.80" /></label>
-            <label class="ai-fld"><span>追保风险线</span><input v-model.number="form.margin_call_risk" type="number" class="d-ipt" placeholder="如 1.5" /></label>
-            <label class="ai-fld"><span>强平风险线</span><input v-model.number="form.force_close_risk" type="number" class="d-ipt" placeholder="如 1.8" /></label>
+            <label class="ai-fld">
+              <span>追保风险线（自动）</span>
+              <input class="d-ipt ai-derived" :value="derivedMarginCall" readonly placeholder="= 投资金额 × 预警线" />
+            </label>
+            <label class="ai-fld">
+              <span>强平风险线（自动）</span>
+              <input class="d-ipt ai-derived" :value="derivedForceClose" readonly placeholder="= 投资金额 × 止损线" />
+            </label>
             <label class="ai-fld"><span>分红率（%）</span><input v-model.number="form.dividend_rate" type="number" class="d-ipt" placeholder="如 20（存为 0.2）" /></label>
             <label class="ai-fld">
               <span>能否交易期权</span>
@@ -255,6 +274,8 @@ const saving = ref(false)
 const formError = ref('')
 const importInput = ref(null)
 const importResult = ref(null)
+const syncing = ref(false)
+const syncResult = ref(null)
 const importing = ref(false)
 const emptyForm = () => ({
   id: null,
@@ -341,6 +362,18 @@ watch(search, () => {
     page.value = 1
     load()
   }, 300)
+})
+
+// 追保/强平风险线派生：投资金额 × 预警线 / 止损线
+const derivedMarginCall = computed(() => {
+  const { invest_amount, warning_line } = form.value
+  if (invest_amount == null || warning_line == null || invest_amount === '' || warning_line === '') return ''
+  return (Number(invest_amount) * Number(warning_line)).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+})
+const derivedForceClose = computed(() => {
+  const { invest_amount, stop_loss_line } = form.value
+  if (invest_amount == null || stop_loss_line == null || invest_amount === '' || stop_loss_line === '') return ''
+  return (Number(invest_amount) * Number(stop_loss_line)).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
 })
 
 function openCreate() {
@@ -441,6 +474,23 @@ async function exportRows() {
 
 function pickImport() {
   importInput.value?.click()
+}
+
+// ---------- 同步 rh_advisors 新账户 ----------
+
+async function syncFromRh() {
+  if (!requireLogin()) return
+  syncing.value = true
+  syncResult.value = null
+  try {
+    const { data } = await client.post('/tables/product-ops/advisor-info/sync/')
+    syncResult.value = data
+    await load()
+  } catch (e) {
+    window.alert(e.response?.data?.detail || '同步失败')
+  } finally {
+    syncing.value = false
+  }
 }
 
 async function onImportChange(e) {
@@ -798,6 +848,10 @@ onMounted(load)
 }
 .ai-fld-wide {
   grid-column: 1 / -1;
+}
+.ai-derived {
+  background: var(--soft);
+  color: var(--muted);
 }
 .ai-form-err {
   color: #B03A2E;

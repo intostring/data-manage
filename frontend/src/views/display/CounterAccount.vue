@@ -1,0 +1,224 @@
+<template>
+  <div class="d-anim w-full">
+    <div class="d-card">
+      <div class="d-card-h">
+        <div>
+          <span class="d-card-t">柜台账户</span>
+          <span class="d-card-x" style="margin-left:10px">mom_fund_status 每日快照 · 只读（{{ rows.length }} 个账户）</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input v-model="date" type="date" class="d-ipt" style="font-size:12px;padding:5px 8px;width:140px" :max="latestDate" @change="load" />
+          <select v-model="account" class="d-ipt" style="font-size:12px;padding:5px 8px;width:220px" @change="load">
+            <option value="">全部账户</option>
+            <option v-for="a in accounts" :key="a.margin_account" :value="a.margin_account">
+              {{ a.broker_name }}（{{ a.futures_account }}）
+            </option>
+          </select>
+          <input v-model="search" class="d-ipt" style="font-size:12px;padding:5px 10px;width:160px" placeholder="搜索账户 / 客户 / 公司" />
+        </div>
+      </div>
+      <div class="d-card-b">
+        <div v-if="loading" style="display:flex;align-items:center;justify-content:center;height:200px">
+          <span class="d-muted">加载中…</span>
+        </div>
+        <div v-else-if="error" style="display:flex;align-items:center;justify-content:center;height:200px">
+          <span style="color:var(--up)">{{ error }}</span>
+        </div>
+        <div v-else-if="!filteredRows.length" style="display:flex;align-items:center;justify-content:center;height:200px">
+          <span class="d-muted">{{ date }} 无数据（非交易日或账户未同步）</span>
+        </div>
+        <div v-else class="ca-scroll">
+          <table class="d-table">
+            <thead>
+              <tr>
+                <th>交易日期</th>
+                <th>期货公司</th>
+                <th>保证金账户</th>
+                <th>期货账户</th>
+                <th>客户名称</th>
+                <th>上日结存</th>
+                <th>客户权益</th>
+                <th>出入金</th>
+                <th>货币资金</th>
+                <th>当日盈亏</th>
+                <th>权利金总额</th>
+                <th>手续费</th>
+                <th>冻结</th>
+                <th>结存</th>
+                <th>占用保证金</th>
+                <th>浮动盈亏</th>
+                <th>可用资金</th>
+                <th>风险度</th>
+                <th>追加保证金</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in filteredRows" :key="r.margin_account">
+                <td class="d-mono">{{ r.trade_date }}</td>
+                <td style="text-align:left">{{ r.broker_name || '—' }}</td>
+                <td class="d-mono">{{ r.margin_account || '—' }}</td>
+                <td class="d-mono">{{ r.futures_account || '—' }}</td>
+                <td class="d-muted" style="text-align:left;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="r.customer_name">{{ r.customer_name || '—' }}</td>
+                <td class="d-mono">{{ fmtMoney(r.prev_balance) }}</td>
+                <td class="d-mono" style="font-weight:600">{{ fmtMoney(r.customer_equity) }}</td>
+                <td class="d-mono" :class="pnlColor(r.deposit_withdraw)">{{ fmtMoney(r.deposit_withdraw) }}</td>
+                <td class="d-mono">{{ fmtMoney(r.currency_funds) }}</td>
+                <td class="d-mono" :class="pnlColor(r.day_pl)">{{ fmtMoney(r.day_pl) }}</td>
+                <td class="d-mono">{{ fmtMoney(r.total_premium) }}</td>
+                <td class="d-mono">{{ fmtMoney(r.fee) }}</td>
+                <td class="d-mono">{{ fmtMoney(r.frozen) }}</td>
+                <td class="d-mono">{{ fmtMoney(r.balance) }}</td>
+                <td class="d-mono">{{ fmtMoney(r.margin_occupied) }}</td>
+                <td class="d-mono" :class="pnlColor(r.floating_pl)">{{ fmtMoney(r.floating_pl) }}</td>
+                <td class="d-mono">{{ fmtMoney(r.available) }}</td>
+                <td class="d-mono" :class="riskColor(r.risk_degree)">{{ fmtPct(r.risk_degree) }}</td>
+                <td class="d-mono">{{ fmtMoney(r.margin_call) }}</td>
+              </tr>
+            </tbody>
+            <tfoot v-if="filteredRows.length">
+              <tr class="ca-total">
+                <td colspan="5">合计（{{ filteredRows.length }} 个账户）</td>
+                <td class="d-mono">{{ fmtMoney(totals.prev_balance) }}</td>
+                <td class="d-mono">{{ fmtMoney(totals.customer_equity) }}</td>
+                <td class="d-mono" :class="pnlColor(totals.deposit_withdraw)">{{ fmtMoney(totals.deposit_withdraw) }}</td>
+                <td class="d-mono">{{ fmtMoney(totals.currency_funds) }}</td>
+                <td class="d-mono" :class="pnlColor(totals.day_pl)">{{ fmtMoney(totals.day_pl) }}</td>
+                <td class="d-mono">{{ fmtMoney(totals.total_premium) }}</td>
+                <td class="d-mono">{{ fmtMoney(totals.fee) }}</td>
+                <td class="d-mono">{{ fmtMoney(totals.frozen) }}</td>
+                <td class="d-mono">{{ fmtMoney(totals.balance) }}</td>
+                <td class="d-mono">{{ fmtMoney(totals.margin_occupied) }}</td>
+                <td class="d-mono" :class="pnlColor(totals.floating_pl)">{{ fmtMoney(totals.floating_pl) }}</td>
+                <td class="d-mono">{{ fmtMoney(totals.available) }}</td>
+                <td class="d-mono">{{ fmtPct(totals.risk_degree) }}</td>
+                <td class="d-mono">{{ fmtMoney(totals.margin_call) }}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <div class="d-muted" style="font-size:11px;margin-top:8px">
+          数据来源：mom_fund_status（每日同步，当前最新 {{ latestDate || '—' }}）；金额单位为元（万/亿缩写），风险度为百分比；本页面只读。
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, onMounted, watch } from 'vue'
+import client from '../../api/client'
+
+const rows = ref([])
+const accounts = ref([])
+const loading = ref(false)
+const error = ref('')
+const date = ref('')
+const account = ref('')
+const search = ref('')
+const latestDate = ref('')
+
+const filteredRows = computed(() => {
+  const kw = search.value.trim().toLowerCase()
+  if (!kw) return rows.value
+  return rows.value.filter(
+    (r) =>
+      (r.margin_account || '').toLowerCase().includes(kw) ||
+      (r.futures_account || '').toLowerCase().includes(kw) ||
+      (r.customer_name || '').toLowerCase().includes(kw) ||
+      (r.broker_name || '').toLowerCase().includes(kw)
+  )
+})
+
+// 合计行：金额列求和；风险度 = Σ占用保证金 / Σ客户权益
+const SUM_KEYS = [
+  'prev_balance', 'customer_equity', 'deposit_withdraw', 'currency_funds', 'day_pl',
+  'total_premium', 'fee', 'frozen', 'balance', 'margin_occupied', 'floating_pl',
+  'available', 'margin_call',
+]
+const totals = computed(() => {
+  const t = Object.fromEntries(SUM_KEYS.map((k) => [k, 0]))
+  for (const r of filteredRows.value) {
+    for (const k of SUM_KEYS) {
+      if (r[k] != null) t[k] += Number(r[k])
+    }
+  }
+  t.risk_degree = t.customer_equity > 0 ? (t.margin_occupied / t.customer_equity) * 100 : null
+  return t
+})
+
+async function load() {
+  loading.value = true
+  error.value = ''
+  try {
+    const params = {}
+    if (date.value) params.date = date.value
+    if (account.value) params.account = account.value
+    const { data } = await client.get('/tables/product-ops/counter-account/', { params })
+    rows.value = data.rows || []
+    accounts.value = data.accounts || []
+    latestDate.value = data.latest_date || ''
+    if (!date.value) date.value = data.trade_date || ''
+  } catch (e) {
+    error.value = e.response?.data?.detail || '加载失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+let searchTimer = null
+watch(search, () => {
+  clearTimeout(searchTimer)
+}, { flush: 'sync' })
+
+function fmtMoney(v) {
+  if (v == null || v === '') return '—'
+  const n = Number(v)
+  if (Math.abs(n) >= 100000000) return `${(n / 100000000).toFixed(2)}亿`
+  if (Math.abs(n) >= 10000) return `${(n / 10000).toFixed(2)}万`
+  return n.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+}
+function fmtPct(v) {
+  if (v == null || v === '') return '—'
+  return Number(v).toFixed(2) + '%'
+}
+function pnlColor(v) {
+  if (v == null || v === 0) return ''
+  return v > 0 ? 'd-up' : 'd-dn'
+}
+function riskColor(v) {
+  if (v == null) return ''
+  if (v >= 95) return 'd-dn'
+  if (v >= 85) return ''
+  return 'd-up'
+}
+
+onMounted(load)
+</script>
+
+<style scoped>
+.ca-scroll {
+  overflow-x: auto;
+}
+.ca-scroll .d-table th {
+  padding: 6px 6px;
+  text-align: center;
+  white-space: normal;
+  word-break: break-word;
+}
+.ca-scroll .d-table td {
+  padding: 6px 6px;
+  font-size: 12px;
+  text-align: center;
+  word-break: break-word;
+}
+
+/* 合计行 */
+.ca-total td {
+  position: sticky;
+  bottom: 0;
+  background: var(--soft);
+  border-top: 2px solid var(--line);
+  font-weight: 600;
+  white-space: nowrap;
+}
+</style>

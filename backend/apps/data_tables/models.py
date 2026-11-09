@@ -790,7 +790,7 @@ class AdvisorInfo(models.Model):
 
     id = models.BigAutoField(primary_key=True)
     name = models.CharField('姓名', max_length=50, db_comment='姓名')
-    account_code = models.CharField('操作账户', max_length=100, blank=True, default='', db_comment='操作账户')
+    account_code = models.CharField('操作账户', max_length=100, blank=True, null=True, unique=True, db_comment='操作账户（唯一）')
     create_date = models.DateField('创建日期', blank=True, null=True, db_comment='创建日期')
     invest_amount = models.DecimalField('投资金额', max_digits=18, decimal_places=2, blank=True, null=True, db_comment='投资金额')
     max_margin_usage = models.DecimalField('最大保证金使用(%)', max_digits=10, decimal_places=4, blank=True, null=True, db_comment='最大保证金使用(%)')
@@ -814,7 +814,6 @@ class AdvisorInfo(models.Model):
     class Meta:
         db_table = 'mom_advisor_info'
         db_table_comment = '产品运维-投顾信息台账'
-        unique_together = (('name', 'account_code'),)
 
 
 class AdvisorDividend(models.Model):
