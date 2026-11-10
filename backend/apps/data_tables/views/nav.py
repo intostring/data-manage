@@ -49,7 +49,7 @@ def _account_series(accounts, equity_col='settle_balance', prefetched=None):
     prefetched：可选，复用已预取的 {account: series} 结果（批量场景避免逐组查库），
     其覆盖范围须包含 accounts。
     """
-    from .models import MomAccountRecord, PerfNetValues, PerfProducts
+    from ..models import MomAccountRecord, PerfNetValues, PerfProducts
 
     if prefetched is not None:
         covered = {a for a in accounts if prefetched.get(a)}

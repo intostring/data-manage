@@ -232,7 +232,7 @@ def advisor_performance(request):
     净值统一由 rh_funds 每日结算权益+出入金份额法现算（缺数据账号用净值表×投资规模合成），
     指标（since/1y/2y/3y）由该净值序列切窗推导，单账号与合并模式同口径
     """
-    from .models import MomAccountRecord, PerfNetValues, PerfProducts, PerfRiskIndicators
+    from ..models import MomAccountRecord, PerfNetValues, PerfProducts, PerfRiskIndicators
 
     pid = request.query_params.get('pid')
     search = request.query_params.get('search', '').strip()

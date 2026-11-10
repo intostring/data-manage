@@ -41,7 +41,7 @@ def strategy_portfolio(request):
     import math
     import statistics
 
-    from .models import MomAccountRecord, PerfProducts
+    from ..models import MomAccountRecord, PerfProducts
 
     pids_raw = request.query_params.get('pids', '').strip()
     weights_raw = request.query_params.get('weights', '').strip()
@@ -436,7 +436,7 @@ def portfolio_records(request):
     组合归属登录用户：GET 返回 自己的 + 公共（owner=NULL）组合，未登录仅返回公共组合；
     POST 需登录（组合归属当前用户）；编辑仅限本人（超管可管理全部）。
     """
-    from .models import StrategyPortfolioRecord
+    from ..models import StrategyPortfolioRecord
 
     if request.method == 'GET':
         qs = StrategyPortfolioRecord.objects.select_related('owner').order_by('-updated_at')
@@ -504,7 +504,7 @@ def portfolio_records(request):
 @permission_classes([AllowAny])
 def portfolio_record_detail(request, pk):
     """查询单个组合 / 删除指定组合（删除限本人或超管）。"""
-    from .models import StrategyPortfolioRecord
+    from ..models import StrategyPortfolioRecord
 
     try:
         record = StrategyPortfolioRecord.objects.select_related('owner').get(pk=pk)

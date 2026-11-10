@@ -95,7 +95,7 @@ def _sync_invest_tag_to_accounts(m):
     操作账户为空或未命中时按同名（account_name）全部账号同步。
     台账先于账户建档时无匹配行，静默跳过（返回 0，不阻断保存）。
     """
-    from .models import MomAccountRecord
+    from ..models import MomAccountRecord
 
     qs = MomAccountRecord.objects.all()
     if m.account_code:
@@ -128,7 +128,7 @@ def advisor_info_records(request):
 
     排序：ordering=字段名（-前缀降序，白名单 _ADVISOR_INFO_ORDER_FIELDS 内）。
     """
-    from .models import AdvisorInfo
+    from ..models import AdvisorInfo
 
     if request.method == 'GET':
         qs = AdvisorInfo.objects.all()
@@ -187,7 +187,7 @@ def advisor_info_records(request):
 @permission_classes([AllowAny])
 def advisor_info_record_detail(request, pk):
     """投顾信息台账：PUT 更新 / DELETE 删除（需登录）。"""
-    from .models import AdvisorInfo
+    from ..models import AdvisorInfo
 
     if not (request.user and request.user.is_authenticated):
         return Response({'detail': '登录后才能维护投顾信息'}, status=401)
@@ -262,7 +262,7 @@ def advisor_info_lookup(request):
 
     优先 mom_account_record（account_id 精确匹配），回退投顾信息台账 mom_advisor_info。
     """
-    from .models import AdvisorInfo, MomAccountRecord
+    from ..models import AdvisorInfo, MomAccountRecord
 
     code = (request.query_params.get('account_code') or '').strip()
     if not code:
@@ -311,7 +311,7 @@ def advisor_info_sync(request):
     2) 台账已有投顾命中 mom_account_record → 仅回填空白字段（投资金额/最大保证金使用/止损线/
        分红率/所属产品/投资标签/投资逻辑/创建日期），不覆盖人工维护数据。
     """
-    from .models import AdvisorInfo, MomAccountRecord
+    from ..models import AdvisorInfo, MomAccountRecord
 
     if not (request.user and request.user.is_authenticated):
         return Response({'detail': '登录后才能同步'}, status=401)
@@ -525,7 +525,7 @@ def counter_account(request):
 @permission_classes([AllowAny])
 def advisor_dividend_records(request):
     """分红信息台账：GET 分页列表（?search= 按账户/投顾/产品模糊，按分红日期倒序），POST 新建（需登录）。"""
-    from .models import AdvisorDividend
+    from ..models import AdvisorDividend
 
     if request.method == 'GET':
         qs = AdvisorDividend.objects.all().order_by(
@@ -567,7 +567,7 @@ def advisor_dividend_records(request):
 @permission_classes([AllowAny])
 def advisor_dividend_record_detail(request, pk):
     """分红信息台账：PUT 更新 / DELETE 删除（需登录）。"""
-    from .models import AdvisorDividend
+    from ..models import AdvisorDividend
 
     if not (request.user and request.user.is_authenticated):
         return Response({'detail': '登录后才能维护分红信息'}, status=401)
