@@ -8,12 +8,42 @@
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <input v-model="date" type="date" class="d-ipt" style="font-size:12px;padding:5px 8px;width:140px" :max="latestDate" @change="load" />
-          <select v-model="account" class="d-ipt" style="font-size:12px;padding:5px 8px;width:220px" @change="load">
-            <option value="">全部账户</option>
-            <option v-for="a in accounts" :key="a.margin_account" :value="a.margin_account">
-              {{ a.broker_name }}（{{ a.futures_account }}）
-            </option>
-          </select>
+          <div ref="comboRef" style="position:relative;width:260px">
+            <input
+              v-model="accountSearch"
+              name="counter_account_search"
+              autocomplete="off"
+              class="d-ipt"
+              style="width:100%;font-size:12px;padding:5px 10px"
+              placeholder="按客户名称筛选账户…"
+              @focus="showAccountDropdown = true"
+              @input="accountHoverIdx = -1"
+              @keydown.down.prevent="hoverNextAccount"
+              @keydown.up.prevent="hoverPrevAccount"
+              @keydown.enter.prevent="confirmHoverAccount"
+              @keydown.esc="showAccountDropdown = false"
+            />
+            <div v-if="showAccountDropdown && accountOptions.length" class="d-combo-list">
+              <div
+                class="d-combo-it ca-combo-it"
+                :class="{ on: !customer }"
+                @mousedown.prevent="pickFund(null)"
+              >
+                <span class="ca-cust">全部账户</span>
+              </div>
+              <div
+                v-for="(f, i) in accountOptions"
+                :key="f.short"
+                class="d-combo-it ca-combo-it"
+                :class="{ on: accountHoverIdx === i || customer === f.short }"
+                :title="`${f.full}${f.count > 1 ? ` · 共 ${f.count} 个账户` : ''}`"
+                @mousedown.prevent="pickFund(f)"
+                @mouseenter="accountHoverIdx = i"
+              >
+                <span class="ca-cust">{{ f.short }}</span>
+              </div>
+            </div>
+          </div>
           <input v-model="search" class="d-ipt" style="font-size:12px;padding:5px 10px;width:160px" placeholder="搜索账户 / 客户 / 公司" />
         </div>
       </div>
@@ -58,7 +88,7 @@
                 <td style="text-align:left">{{ r.broker_name || '—' }}</td>
                 <td class="d-mono">{{ r.margin_account || '—' }}</td>
                 <td class="d-mono">{{ r.futures_account || '—' }}</td>
-                <td class="d-muted" style="text-align:left;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="r.customer_name">{{ r.customer_name || '—' }}</td>
+                <td class="d-muted" style="text-align:left;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="r.customer_name">{{ shortName(r.customer_name) || '—' }}</td>
                 <td class="d-mono">{{ fmtMoney(r.prev_balance) }}</td>
                 <td class="d-mono" style="font-weight:600">{{ fmtMoney(r.customer_equity) }}</td>
                 <td class="d-mono" :class="pnlColor(r.deposit_withdraw)">{{ fmtMoney(r.deposit_withdraw) }}</td>
@@ -105,7 +135,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import client from '../../api/client'
 
 const rows = ref([])
@@ -113,9 +143,81 @@ const accounts = ref([])
 const loading = ref(false)
 const error = ref('')
 const date = ref('')
-const account = ref('')
+const customer = ref('')
 const search = ref('')
 const latestDate = ref('')
+
+// 账户下拉：按客户名称（基金简称）筛选
+const accountSearch = ref('')
+const showAccountDropdown = ref(false)
+const accountHoverIdx = ref(-1)
+const comboRef = ref(null)
+
+// 按简称去重为基金选项：同一基金在各期货公司的账户合并为一项
+const fundOptions = computed(() => {
+  const map = new Map()
+  for (const a of accounts.value) {
+    const short = shortName(a.customer_name) || '—'
+    if (!map.has(short)) {
+      map.set(short, { short, full: a.customer_name || '', count: 0 })
+    }
+    map.get(short).count += 1
+  }
+  return [...map.values()]
+})
+
+const accountOptions = computed(() => {
+  const kw = accountSearch.value.trim().toLowerCase()
+  if (!kw) return fundOptions.value
+  return fundOptions.value.filter(
+    (f) => f.short.toLowerCase().includes(kw) || f.full.toLowerCase().includes(kw),
+  )
+})
+
+// 客户名称简称：去掉管理人前缀（首个「公司」前，含其后的连字符）与「私募证券投资基金」等后缀
+function shortName(name) {
+  if (!name) return ''
+  let s = name
+  const idx = s.indexOf('公司')
+  if (idx >= 0) s = s.slice(idx + 2)
+  s = s.replace(/^[-—－]+/, '')
+  s = s.replace(/(私募证券投资基金|私募基金|证券投资基金)$/, '')
+  return s || name
+}
+
+function hoverNextAccount() {
+  showAccountDropdown.value = true
+  accountHoverIdx.value = Math.min(accountHoverIdx.value + 1, accountOptions.value.length - 1)
+}
+function hoverPrevAccount() {
+  accountHoverIdx.value = Math.max(accountHoverIdx.value - 1, -1)
+}
+function confirmHoverAccount() {
+  if (accountHoverIdx.value >= 0 && accountHoverIdx.value < accountOptions.value.length) {
+    pickFund(accountOptions.value[accountHoverIdx.value])
+  } else {
+    showAccountDropdown.value = false
+  }
+}
+
+function pickFund(f) {
+  customer.value = f ? f.short : ''
+  accountSearch.value = f ? f.short : ''
+  showAccountDropdown.value = false
+  accountHoverIdx.value = -1
+  load()
+}
+
+// 数据刷新后同步输入框显示为已选基金简称
+watch(customer, (v) => {
+  if (v && accountSearch.value !== v) accountSearch.value = v
+})
+
+function onDocPointerDown(e) {
+  if (comboRef.value && !comboRef.value.contains(e.target)) {
+    showAccountDropdown.value = false
+  }
+}
 
 const filteredRows = computed(() => {
   const kw = search.value.trim().toLowerCase()
@@ -152,7 +254,7 @@ async function load() {
   try {
     const params = {}
     if (date.value) params.date = date.value
-    if (account.value) params.account = account.value
+    if (customer.value) params.customer = customer.value
     const { data } = await client.get('/tables/product-ops/counter-account/', { params })
     rows.value = data.rows || []
     accounts.value = data.accounts || []
@@ -192,10 +294,28 @@ function riskColor(v) {
   return 'd-up'
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  document.addEventListener('pointerdown', onDocPointerDown)
+})
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', onDocPointerDown)
+})
 </script>
 
 <style scoped>
+/* 账户组合框选项：仅显示客户名称 */
+.ca-combo-it {
+  justify-content: flex-start;
+}
+.ca-cust {
+  font-size: 12px;
+  max-width: 230px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ca-scroll {
   overflow-x: auto;
 }

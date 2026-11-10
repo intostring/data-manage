@@ -143,6 +143,7 @@ import {
   LayoutDashboard,
   TrendingUp,
   Layers,
+  Sigma,
   PieChart,
   ArrowLeftRight,
   ShieldCheck,
@@ -174,7 +175,16 @@ let varietySearchTimer = null
 
 const modules = [
   { name: 'display-overview', label: '总览', path: '/display/overview', icon: LayoutDashboard },
-  { name: 'display-advisor', label: '投顾分析', path: '/display/advisor', icon: TrendingUp },
+  {
+    name: 'display-advisor',
+    label: '投顾分析',
+    path: '/display/advisor',
+    icon: TrendingUp,
+    children: [
+      { name: 'display-advisor', label: '投顾列表', path: '/display/advisor' },
+      { name: 'display-advisor-compare', label: '投顾对比', path: '/display/advisor/compare' },
+    ],
+  },
   {
     name: 'display-sector',
     label: '盈亏分析',
@@ -185,6 +195,7 @@ const modules = [
       { name: 'display-sector-advisor-variety', label: '品种投顾明细', path: '/display/sector/advisor-variety' },
     ],
   },
+  { name: 'display-option', label: '期权分析', path: '/display/option', icon: Sigma },
   {
     name: 'display-position',
     label: '持仓分析',
@@ -234,12 +245,14 @@ const titleMap = {
   'display-overview': '总览',
   'display-advisor': '投顾分析',
   'display-advisor-detail': '投顾分析',
+  'display-advisor-compare': '投顾对比',
   'display-sector': '盈亏分析',
   'display-sector-pnl': '品种盈亏',
   'display-sector-advisor-variety': '品种投顾明细',
   'display-sector-contract-kline': '合约成交明细',
-  'display-option-underlying': '期权品种盈亏',
-  'display-option-advisor-trades': '期权成交记录',
+  'display-option': '期权盈亏总览',
+  'display-option-underlying': '期权标的盈亏',
+  'display-option-advisor-trades': '投顾期权成交',
   'display-position': '持仓分析',
   'display-position-sector-analysis': '板块分析',
   'display-position-sector-detail': '板块持仓明细',
@@ -265,9 +278,9 @@ function isActive(name) {
   if (name === 'display-advisor') {
     return route.name === 'display-advisor' || route.name === 'display-advisor-detail'
   }
-  // 期权品种盈亏 / 期权成交记录详情页时，「盈亏分析」父项保持高亮
-  if (name === 'display-sector') {
-    return ['display-sector', 'display-option-underlying', 'display-option-advisor-trades'].includes(route.name)
+  // 期权标的盈亏 / 投顾期权成交详情页时，「期权分析」父项保持高亮
+  if (name === 'display-option') {
+    return ['display-option', 'display-option-underlying', 'display-option-advisor-trades'].includes(route.name)
   }
   return route.name === name
 }

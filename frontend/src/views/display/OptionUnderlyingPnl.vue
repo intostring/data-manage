@@ -9,7 +9,7 @@
             {{ data.underlying || '—' }} · 截至 {{ data.trade_date || '—' }} · 以来累计 · 全体投顾合计
           </span>
         </div>
-        <router-link class="opu-back" :to="{ name: 'display-sector' }">← 返回盈亏分析</router-link>
+        <router-link class="opu-back" :to="{ name: 'display-option' }">← 返回期权分析</router-link>
       </div>
       <div class="d-card-b">
         <div v-if="loading" class="opu-empty">加载中...</div>
