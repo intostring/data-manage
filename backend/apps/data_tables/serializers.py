@@ -122,13 +122,16 @@ class FutSectorIndexSerializer(serializers.ModelSerializer):
 
 
 _OHLC_FIELDS = ('open', 'high', 'low', 'close')
+# 四价全 0（当日无成交）时的兜底来源：结算价 → 昨结算价
+_OHLC_FALLBACK_FIELDS = ('settle', 'pre_settle')
 
 
 def _fill_ohlc(data):
     """行情展示兜底：开/高/低/收 任一有值时，其余 0 或空 值显示为该有值价格。
 
-    不活跃合约常见 open/high/low 为 0（当日无成交），仅有 close（或反之）有值，
-    展示层用有值价格补齐 0 值，避免页面出现无意义的 0；导出仍为原始数据。
+    不活跃合约常见 open/high/low 为 0（当日无成交），仅有 close（或反之）有值；
+    四价全 0 时退而取结算价（再退昨结算价）。展示层用有值价格补齐 0 值，
+    避免页面出现无意义的 0；导出仍为原始数据。
     """
     def _num(v):
         try:
@@ -138,6 +141,8 @@ def _fill_ohlc(data):
 
     values = {f: _num(data.get(f)) for f in _OHLC_FIELDS}
     ref_field = next((f for f in _OHLC_FIELDS if values[f]), None)
+    if ref_field is None:
+        ref_field = next((f for f in _OHLC_FALLBACK_FIELDS if _num(data.get(f))), None)
     if ref_field is None:
         return data
     ref_display = data[ref_field]

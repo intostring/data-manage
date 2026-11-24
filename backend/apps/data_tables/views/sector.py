@@ -12,6 +12,8 @@ from rest_framework.filters import OrderingFilter
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
+from ..serializers import _fill_ohlc
+
 
 # 持仓明细表(perf_variety_position_detail)的品种命名与标准表
 # (fut_symbol_info / fut_market_stats / yl_perf_variety_pnl_trend)不一致的别名
@@ -46,21 +48,6 @@ def position_variety_names(standard_name):
 def position_variety_in_sql(names):
     """生成 variety IN (...) 的占位片段，与参数列表配合使用。"""
     return 'variety IN (' + ','.join(['%s'] * len(names)) + ')'
-
-
-# 筛选操作符 → Django ORM lookup 映射
-FILTER_OPS = {
-    'eq': '',            # 精确匹配
-    'ne': '',            # 不等于（exclude）
-    'contains': 'icontains',
-    'not_contains': 'icontains',  # 不包含（exclude）
-    'gt': 'gt',
-    'lt': 'lt',
-    'gte': 'gte',
-    'lte': 'lte',
-    'empty': 'isnull',   # 为空
-    'not_empty': 'isnull',  # 不为空（exclude isnull）
-}
 
 
 @api_view(['GET'])
@@ -155,28 +142,36 @@ def sector_contract_kline(request):
                 close,
                 vol,
                 amount,
-                oi
+                oi,
+                settle,
+                pre_settle
             FROM {{table}}
             WHERE ts_code IN ({ts_placeholders})
             ORDER BY trade_date
         """
 
+        def _to_market_row(row):
+            data = {
+                'ts_code': row[0],
+                'date': row[1].isoformat() if row[1] else None,
+                'open': row[2],
+                'high': row[3],
+                'low': row[4],
+                'close': row[5],
+                'vol': row[6],
+                'amount': row[7],
+                'oi': row[8],
+                'settle': row[9],
+                'pre_settle': row[10],
+            }
+            # 无成交日开/高/低/收为 0：与表格页同口径，用有值价格（收→结算→昨结）补齐，
+            # 否则 K线价格轴被 0 拉低、蜡烛图被画坏
+            _fill_ohlc(data)
+            return data
+
         def fetch_market_rows(table):
             cursor.execute(market_sql.format(table=table), market_ts_codes)
-            fetched = [
-                {
-                    'ts_code': row[0],
-                    'date': row[1].isoformat() if row[1] else None,
-                    'open': row[2],
-                    'high': row[3],
-                    'low': row[4],
-                    'close': row[5],
-                    'vol': row[6],
-                    'amount': row[7],
-                    'oi': row[8],
-                }
-                for row in cursor.fetchall()
-            ]
+            fetched = [_to_market_row(row) for row in cursor.fetchall()]
             if fetched:
                 return fetched
             cursor.execute(
@@ -190,27 +185,16 @@ def sector_contract_kline(request):
                     close,
                     vol,
                     amount,
-                    oi
+                    oi,
+                    settle,
+                    pre_settle
                 FROM {table}
                 WHERE ts_code LIKE %s
                 ORDER BY trade_date
                 """,
                 [f'{code_base}.%'],
             )
-            return [
-                {
-                    'ts_code': row[0],
-                    'date': row[1].isoformat() if row[1] else None,
-                    'open': row[2],
-                    'high': row[3],
-                    'low': row[4],
-                    'close': row[5],
-                    'vol': row[6],
-                    'amount': row[7],
-                    'oi': row[8],
-                }
-                for row in cursor.fetchall()
-            ]
+            return [_to_market_row(row) for row in cursor.fetchall()]
 
         market_tables = ['opt_market_data', 'fut_market_data'] if is_option_contract else ['fut_market_data', 'opt_market_data']
         rows = []

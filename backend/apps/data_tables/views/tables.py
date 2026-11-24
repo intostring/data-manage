@@ -14,6 +14,20 @@ from rest_framework.response import Response
 
 from ..registry import table_registry
 
+# 筛选操作符 → Django ORM lookup 映射
+FILTER_OPS = {
+    'eq': '',            # 精确匹配
+    'ne': '',            # 不等于（exclude）
+    'contains': 'icontains',
+    'not_contains': 'icontains',  # 不包含（exclude）
+    'gt': 'gt',
+    'lt': 'lt',
+    'gte': 'gte',
+    'lte': 'lte',
+    'empty': 'isnull',   # 为空
+    'not_empty': 'isnull',  # 不为空（exclude isnull）
+}
+
 
 def _apply_advanced_filters(qs, request, model):
     """解析 filter.<col>.<op>=value 查询参数并应用到 queryset
