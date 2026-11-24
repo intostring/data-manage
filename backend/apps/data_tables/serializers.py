@@ -121,10 +121,39 @@ class FutSectorIndexSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+_OHLC_FIELDS = ('open', 'high', 'low', 'close')
+
+
+def _fill_ohlc(data):
+    """行情展示兜底：开/高/低/收 任一有值时，其余 0 或空 值显示为该有值价格。
+
+    不活跃合约常见 open/high/low 为 0（当日无成交），仅有 close（或反之）有值，
+    展示层用有值价格补齐 0 值，避免页面出现无意义的 0；导出仍为原始数据。
+    """
+    def _num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    values = {f: _num(data.get(f)) for f in _OHLC_FIELDS}
+    ref_field = next((f for f in _OHLC_FIELDS if values[f]), None)
+    if ref_field is None:
+        return data
+    ref_display = data[ref_field]
+    for f in _OHLC_FIELDS:
+        if not values[f]:
+            data[f] = ref_display
+    return data
+
+
 class FutMarketDataSerializer(serializers.ModelSerializer):
     class Meta:
         model = FutMarketData
         fields = '__all__'
+
+    def to_representation(self, instance):
+        return _fill_ohlc(super().to_representation(instance))
 
 
 class FutMarketStatsSerializer(serializers.ModelSerializer):
@@ -143,6 +172,9 @@ class OptMarketDataSerializer(serializers.ModelSerializer):
     class Meta:
         model = OptMarketData
         fields = '__all__'
+
+    def to_representation(self, instance):
+        return _fill_ohlc(super().to_representation(instance))
 
 
 class FofEmailHypoSerializer(serializers.ModelSerializer):
